@@ -1,0 +1,47 @@
+{
+  "name": "questdb-qwp-bunclient",
+  "version": "1.0.0",
+  "description": "QuestDB Wire Protocol (QWP) client for Bun. Columnar binary ingestion over WebSocket with an API compatible with @questdb/nodejs-client.",
+  "type": "module",
+  "main": "src/index.ts",
+  "module": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "bun test ./test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build ./src/index.ts --target=bun --format=esm --outdir=dist",
+    "docs": "typedoc --out docs src/index.ts"
+  },
+  "keywords": [
+    "questdb",
+    "qwp",
+    "wire-protocol",
+    "websocket",
+    "ingestion",
+    "client",
+    "bun"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typedoc": "^0.28.9",
+    "typescript": "^5"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

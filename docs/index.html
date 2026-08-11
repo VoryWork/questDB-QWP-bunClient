@@ -1,0 +1,257 @@
+<!DOCTYPE html><html class="default" lang="en" data-base="./"><head><meta charset="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>questdb-qwp-bunclient</title><meta name="description" content="Documentation for questdb-qwp-bunclient"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="assets/style.css"/><link rel="stylesheet" href="assets/highlight.css"/><script defer src="assets/main.js"></script><script async src="assets/icons.js" id="tsd-icons-script"></script><script async src="assets/search.js" id="tsd-search-script"></script><script async src="assets/navigation.js" id="tsd-nav-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => window.app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar">
+<div class="tsd-toolbar-contents container"><a href="index.html" class="title">questdb-qwp-bunclient</a>
+<div id="tsd-toolbar-links"></div><button id="tsd-search-trigger" class="tsd-widget" aria-label="Search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="assets/icons.svg#icon-search"></use></svg></button><dialog id="tsd-search" aria-label="Search"><input role="combobox" id="tsd-search-input" aria-controls="tsd-search-results" aria-autocomplete="list" aria-expanded="true" autocapitalize="off" autocomplete="off" placeholder="Search the docs" maxLength="100"/>
+<ul role="listbox" id="tsd-search-results"></ul>
+<div id="tsd-search-status" aria-live="polite" aria-atomic="true">
+<div>Preparing search index...</div></div></dialog><a href="#" class="tsd-widget menu" id="tsd-toolbar-menu-trigger" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="assets/icons.svg#icon-menu"></use></svg></a></div></header>
+<div class="container container-main">
+<div class="col-content">
+<div class="tsd-page-title">
+<h1>questdb-qwp-bunclient</h1></div>
+<div class="tsd-panel tsd-typography"><h1 id="questdb-qwp-bunclient" class="tsd-anchor-link">questdb-qwp-bunclient<a href="#questdb-qwp-bunclient" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h1>
+<p>QuestDB Wire Protocol (QWP) 客户端，基于 <strong>Bun 原生 WebSocket</strong>，公共 API 与
+<a href="https://questdb.github.io/nodejs-questdb-client"><code>@questdb/nodejs-client</code></a> 兼容。</p>
+<p>QWP 是 QuestDB 的二进制数据摄入协议（WebSocket 传输，<code>/write/v4</code> 端点）。本项目的协议实现参考了
+<a href="https://github.com/questdb/java-questdb-client">Java 客户端</a> 的 <code>io.questdb.client.cutlass.qwp</code> 包与
+<a href="https://questdb.com/docs/connect/wire-protocols/qwp-ingress-websocket">QWP 协议文档</a>。</p>
+<h2 id="特性" class="tsd-anchor-link">特性<a href="#特性" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li><strong>零依赖</strong>：使用 Bun 内置的 <code>WebSocket</code> 客户端，无需 <code>ws</code> 包</li>
+<li><strong>API 兼容</strong>：<code>Sender.fromConfig</code> / <code>table</code> / <code>symbol</code> / <code>stringColumn</code> / <code>intColumn</code> /
+<code>floatColumn</code> / <code>booleanColumn</code> / <code>timestampColumn</code> / <code>arrayColumn</code> / <code>decimalColumn</code> /
+<code>at</code> / <code>atNow</code> / <code>flush</code> / <code>close</code> 与 nodejs 客户端一致</li>
+<li><strong>列式二进制编码</strong>：12 字节消息头（<code>QWP1</code>）、增量符号字典、null 位图、VARCHAR 偏移数组、
+位打包 BOOLEAN、TIMESTAMP（微秒/纳秒）、DOUBLE/LONG 数组、DECIMAL64/128/256</li>
+<li><strong>同步确认模型</strong>：<code>flush()</code> 在服务器确认（ACK）后返回，单次 flush = 服务器单事务</li>
+<li><strong>自动 flush</strong>：<code>auto_flush_rows</code>（默认 1000）/ <code>auto_flush_interval</code>（默认 1000ms）</li>
+<li><strong>认证</strong>：Basic（<code>username</code>+<code>password</code>）或 Bearer（<code>token</code>）在 WebSocket 升级握手时发送</li>
+<li><strong>防丢/防重</strong>：flush 串行化 + 发送期间表缓冲替换，高负载下不丢行、不重复</li>
+</ul>
+<h2 id="安装" class="tsd-anchor-link">安装<a href="#安装" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-0">bun</span><span class="hl-1"> </span><span class="hl-2">add</span><span class="hl-1"> </span><span class="hl-2">questdb-qwp-bunclient</span>
+</code><button type="button">Copy</button></pre>
+
+<p>或直接以源码方式使用（本仓库）：</p>
+<pre><code class="bash"><span class="hl-0">bun</span><span class="hl-1"> </span><span class="hl-2">install</span><br/><span class="hl-0">bun</span><span class="hl-1"> </span><span class="hl-2">test</span><span class="hl-1"> </span><span class="hl-2">./test</span><span class="hl-1">        </span><span class="hl-3"># 运行全部测试</span><br/><span class="hl-0">bunx</span><span class="hl-1"> </span><span class="hl-2">tsc</span><span class="hl-1"> </span><span class="hl-4">--noEmit</span><span class="hl-1">      </span><span class="hl-3"># 类型检查</span>
+</code><button type="button">Copy</button></pre>
+
+<p>集成测试（<code>test/sender.integration.test.ts</code>）需要本机 QuestDB（默认 <code>localhost:9000</code>）。
+无 QuestDB 时这些用例会自动跳过。</p>
+<h2 id="基本用法" class="tsd-anchor-link">基本用法<a href="#基本用法" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="typescript"><span class="hl-5">import</span><span class="hl-1"> { </span><span class="hl-6">Sender</span><span class="hl-1"> } </span><span class="hl-5">from</span><span class="hl-1"> </span><span class="hl-2">&quot;questdb-qwp-bunclient&quot;</span><span class="hl-1">;</span><br/><br/><span class="hl-4">async</span><span class="hl-1"> </span><span class="hl-4">function</span><span class="hl-1"> </span><span class="hl-0">run</span><span class="hl-1">() {</span><br/><span class="hl-1">  </span><span class="hl-3">// 使用 ws 协议创建 Sender（QWP over WebSocket）</span><br/><span class="hl-1">  </span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">sender</span><span class="hl-1"> = </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">Sender</span><span class="hl-1">.</span><span class="hl-0">fromConfig</span><span class="hl-1">(</span><span class="hl-2">&quot;ws::addr=127.0.0.1:9000&quot;</span><span class="hl-1">);</span><br/><br/><span class="hl-1">  </span><span class="hl-3">// 向 Sender 的缓冲中添加行</span><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><br/><span class="hl-1">    .</span><span class="hl-0">table</span><span class="hl-1">(</span><span class="hl-2">&quot;trades&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">symbol</span><span class="hl-1">(</span><span class="hl-2">&quot;symbol&quot;</span><span class="hl-1">, </span><span class="hl-2">&quot;BTC-USD&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">symbol</span><span class="hl-1">(</span><span class="hl-2">&quot;side&quot;</span><span class="hl-1">, </span><span class="hl-2">&quot;sell&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">floatColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;price&quot;</span><span class="hl-1">, </span><span class="hl-8">39269.98</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">floatColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;amount&quot;</span><span class="hl-1">, </span><span class="hl-8">0.011</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">at</span><span class="hl-1">(</span><span class="hl-6">Date</span><span class="hl-1">.</span><span class="hl-0">now</span><span class="hl-1">(), </span><span class="hl-2">&quot;ms&quot;</span><span class="hl-1">);</span><br/><br/><span class="hl-1">  </span><span class="hl-3">// flush 缓冲，将数据发送到 QuestDB</span><br/><span class="hl-1">  </span><span class="hl-3">// 数据发送后缓冲被清空，Sender 可继续接受新数据</span><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">flush</span><span class="hl-1">();</span><br/><br/><span class="hl-1">  </span><span class="hl-3">// 关闭连接（未 flush 的数据将丢失）</span><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">close</span><span class="hl-1">();</span><br/><span class="hl-1">}</span><br/><br/><span class="hl-0">run</span><span class="hl-1">().</span><span class="hl-0">then</span><span class="hl-1">(</span><span class="hl-6">console</span><span class="hl-1">.</span><span class="hl-6">log</span><span class="hl-1">).</span><span class="hl-0">catch</span><span class="hl-1">(</span><span class="hl-6">console</span><span class="hl-1">.</span><span class="hl-6">error</span><span class="hl-1">);</span>
+</code><button type="button">Copy</button></pre>
+
+<h2 id="认证" class="tsd-anchor-link">认证<a href="#认证" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<h4 id="用户名密码认证（basic）" class="tsd-anchor-link">用户名密码认证（Basic）<a href="#用户名密码认证（basic）" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h4>
+<pre><code class="typescript"><span class="hl-5">import</span><span class="hl-1"> { </span><span class="hl-6">Sender</span><span class="hl-1"> } </span><span class="hl-5">from</span><span class="hl-1"> </span><span class="hl-2">&quot;questdb-qwp-bunclient&quot;</span><span class="hl-1">;</span><br/><br/><span class="hl-4">async</span><span class="hl-1"> </span><span class="hl-4">function</span><span class="hl-1"> </span><span class="hl-0">run</span><span class="hl-1">() {</span><br/><span class="hl-1">  </span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">USER</span><span class="hl-1"> = </span><span class="hl-2">&quot;admin&quot;</span><span class="hl-1">;</span><br/><span class="hl-1">  </span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">PWD</span><span class="hl-1"> = </span><span class="hl-2">&quot;quest&quot;</span><span class="hl-1">;</span><br/><br/><span class="hl-1">  </span><span class="hl-3">// 认证信息在 WebSocket 升级握手时通过 Authorization: Basic 头发送</span><br/><span class="hl-1">  </span><span class="hl-3">// 安全连接使用 &#39;wss&#39; 协议而非 &#39;ws&#39;</span><br/><span class="hl-1">  </span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">sender</span><span class="hl-1"> = </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">Sender</span><span class="hl-1">.</span><span class="hl-0">fromConfig</span><span class="hl-1">(</span><br/><span class="hl-1">    </span><span class="hl-2">`ws::addr=127.0.0.1:9000;username=</span><span class="hl-4">${</span><span class="hl-7">USER</span><span class="hl-4">}</span><span class="hl-2">;password=</span><span class="hl-4">${</span><span class="hl-7">PWD</span><span class="hl-4">}</span><span class="hl-2">`</span><span class="hl-1">,</span><br/><span class="hl-1">  );</span><br/><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><br/><span class="hl-1">    .</span><span class="hl-0">table</span><span class="hl-1">(</span><span class="hl-2">&quot;trades&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">symbol</span><span class="hl-1">(</span><span class="hl-2">&quot;symbol&quot;</span><span class="hl-1">, </span><span class="hl-2">&quot;ETH-USD&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">symbol</span><span class="hl-1">(</span><span class="hl-2">&quot;side&quot;</span><span class="hl-1">, </span><span class="hl-2">&quot;sell&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">floatColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;price&quot;</span><span class="hl-1">, </span><span class="hl-8">2615.54</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">floatColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;amount&quot;</span><span class="hl-1">, </span><span class="hl-8">0.00044</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">at</span><span class="hl-1">(</span><span class="hl-6">Date</span><span class="hl-1">.</span><span class="hl-0">now</span><span class="hl-1">(), </span><span class="hl-2">&quot;ms&quot;</span><span class="hl-1">);</span><br/><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">flush</span><span class="hl-1">();</span><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">close</span><span class="hl-1">();</span><br/><span class="hl-1">}</span><br/><br/><span class="hl-0">run</span><span class="hl-1">().</span><span class="hl-0">catch</span><span class="hl-1">(</span><span class="hl-6">console</span><span class="hl-1">.</span><span class="hl-6">error</span><span class="hl-1">);</span>
+</code><button type="button">Copy</button></pre>
+
+<h4 id="bearer-token-认证" class="tsd-anchor-link">Bearer token 认证<a href="#bearer-token-认证" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h4>
+<pre><code class="typescript"><span class="hl-5">import</span><span class="hl-1"> { </span><span class="hl-6">Sender</span><span class="hl-1"> } </span><span class="hl-5">from</span><span class="hl-1"> </span><span class="hl-2">&quot;questdb-qwp-bunclient&quot;</span><span class="hl-1">;</span><br/><br/><span class="hl-4">async</span><span class="hl-1"> </span><span class="hl-4">function</span><span class="hl-1"> </span><span class="hl-0">run</span><span class="hl-1">() {</span><br/><span class="hl-1">  </span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">TOKEN</span><span class="hl-1"> = </span><span class="hl-2">&quot;Xyvd3er6GF87ysaHk&quot;</span><span class="hl-1">;</span><br/><br/><span class="hl-1">  </span><span class="hl-3">// 认证信息在 WebSocket 升级握手时通过 Authorization: Bearer 头发送</span><br/><span class="hl-1">  </span><span class="hl-3">// 注意：token 认证仅 QuestDB 企业版支持</span><br/><span class="hl-1">  </span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">sender</span><span class="hl-1"> = </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">Sender</span><span class="hl-1">.</span><span class="hl-0">fromConfig</span><span class="hl-1">(</span><br/><span class="hl-1">    </span><span class="hl-2">`ws::addr=127.0.0.1:9000;token=</span><span class="hl-4">${</span><span class="hl-7">TOKEN</span><span class="hl-4">}</span><span class="hl-2">`</span><span class="hl-1">,</span><br/><span class="hl-1">  );</span><br/><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><br/><span class="hl-1">    .</span><span class="hl-0">table</span><span class="hl-1">(</span><span class="hl-2">&quot;trades&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">symbol</span><span class="hl-1">(</span><span class="hl-2">&quot;symbol&quot;</span><span class="hl-1">, </span><span class="hl-2">&quot;ETH-USD&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">symbol</span><span class="hl-1">(</span><span class="hl-2">&quot;side&quot;</span><span class="hl-1">, </span><span class="hl-2">&quot;sell&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">floatColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;price&quot;</span><span class="hl-1">, </span><span class="hl-8">2615.54</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">floatColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;amount&quot;</span><span class="hl-1">, </span><span class="hl-8">0.00044</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">at</span><span class="hl-1">(</span><span class="hl-6">Date</span><span class="hl-1">.</span><span class="hl-0">now</span><span class="hl-1">(), </span><span class="hl-2">&quot;ms&quot;</span><span class="hl-1">);</span><br/><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">flush</span><span class="hl-1">();</span><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">close</span><span class="hl-1">();</span><br/><span class="hl-1">}</span><br/><br/><span class="hl-0">run</span><span class="hl-1">().</span><span class="hl-0">catch</span><span class="hl-1">(</span><span class="hl-6">console</span><span class="hl-1">.</span><span class="hl-6">error</span><span class="hl-1">);</span>
+</code><button type="button">Copy</button></pre>
+
+<h2 id="数组列" class="tsd-anchor-link">数组列<a href="#数组列" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="typescript"><span class="hl-5">import</span><span class="hl-1"> { </span><span class="hl-6">Sender</span><span class="hl-1"> } </span><span class="hl-5">from</span><span class="hl-1"> </span><span class="hl-2">&quot;questdb-qwp-bunclient&quot;</span><span class="hl-1">;</span><br/><br/><span class="hl-4">async</span><span class="hl-1"> </span><span class="hl-4">function</span><span class="hl-1"> </span><span class="hl-0">run</span><span class="hl-1">() {</span><br/><span class="hl-1">  </span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">sender</span><span class="hl-1"> = </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">Sender</span><span class="hl-1">.</span><span class="hl-0">fromConfig</span><span class="hl-1">(</span><span class="hl-2">&quot;ws::addr=localhost:9000&quot;</span><span class="hl-1">);</span><br/><br/><span class="hl-1">  </span><span class="hl-3">// 待摄入的订单簿快照</span><br/><span class="hl-1">  </span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">orderBooks</span><span class="hl-1"> = [</span><br/><span class="hl-1">    {</span><br/><span class="hl-1">      </span><span class="hl-6">symbol:</span><span class="hl-1"> </span><span class="hl-2">&quot;BTC-USD&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">exchange:</span><span class="hl-1"> </span><span class="hl-2">&quot;Coinbase&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">timestamp:</span><span class="hl-1"> </span><span class="hl-6">Date</span><span class="hl-1">.</span><span class="hl-0">now</span><span class="hl-1">(),</span><br/><span class="hl-1">      </span><span class="hl-6">bidPrices:</span><span class="hl-1"> [</span><span class="hl-8">50100.25</span><span class="hl-1">, </span><span class="hl-8">50100.20</span><span class="hl-1">, </span><span class="hl-8">50100.15</span><span class="hl-1">, </span><span class="hl-8">50100.10</span><span class="hl-1">, </span><span class="hl-8">50100.05</span><span class="hl-1">],</span><br/><span class="hl-1">      </span><span class="hl-6">bidSizes:</span><span class="hl-1"> [</span><span class="hl-8">0.5</span><span class="hl-1">, </span><span class="hl-8">1.2</span><span class="hl-1">, </span><span class="hl-8">2.1</span><span class="hl-1">, </span><span class="hl-8">0.8</span><span class="hl-1">, </span><span class="hl-8">3.5</span><span class="hl-1">],</span><br/><span class="hl-1">      </span><span class="hl-6">askPrices:</span><span class="hl-1"> [</span><span class="hl-8">50100.30</span><span class="hl-1">, </span><span class="hl-8">50100.35</span><span class="hl-1">, </span><span class="hl-8">50100.40</span><span class="hl-1">, </span><span class="hl-8">50100.45</span><span class="hl-1">, </span><span class="hl-8">50100.50</span><span class="hl-1">],</span><br/><span class="hl-1">      </span><span class="hl-6">askSizes:</span><span class="hl-1"> [</span><span class="hl-8">0.6</span><span class="hl-1">, </span><span class="hl-8">1.5</span><span class="hl-1">, </span><span class="hl-8">1.8</span><span class="hl-1">, </span><span class="hl-8">2.2</span><span class="hl-1">, </span><span class="hl-8">4.0</span><span class="hl-1">],</span><br/><span class="hl-1">    },</span><br/><span class="hl-1">    {</span><br/><span class="hl-1">      </span><span class="hl-6">symbol:</span><span class="hl-1"> </span><span class="hl-2">&quot;ETH-USD&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">exchange:</span><span class="hl-1"> </span><span class="hl-2">&quot;Coinbase&quot;</span><span class="hl-1">,</span><br/><span class="hl-1">      </span><span class="hl-6">timestamp:</span><span class="hl-1"> </span><span class="hl-6">Date</span><span class="hl-1">.</span><span class="hl-0">now</span><span class="hl-1">(),</span><br/><span class="hl-1">      </span><span class="hl-6">bidPrices:</span><span class="hl-1"> [</span><span class="hl-8">2850.5</span><span class="hl-1">, </span><span class="hl-8">2850.45</span><span class="hl-1">, </span><span class="hl-8">2850.4</span><span class="hl-1">, </span><span class="hl-8">2850.35</span><span class="hl-1">, </span><span class="hl-8">2850.3</span><span class="hl-1">],</span><br/><span class="hl-1">      </span><span class="hl-6">bidSizes:</span><span class="hl-1"> [</span><span class="hl-8">5.0</span><span class="hl-1">, </span><span class="hl-8">8.2</span><span class="hl-1">, </span><span class="hl-8">12.5</span><span class="hl-1">, </span><span class="hl-8">6.8</span><span class="hl-1">, </span><span class="hl-8">15.0</span><span class="hl-1">],</span><br/><span class="hl-1">      </span><span class="hl-6">askPrices:</span><span class="hl-1"> [</span><span class="hl-8">2850.55</span><span class="hl-1">, </span><span class="hl-8">2850.6</span><span class="hl-1">, </span><span class="hl-8">2850.65</span><span class="hl-1">, </span><span class="hl-8">2850.7</span><span class="hl-1">, </span><span class="hl-8">2850.75</span><span class="hl-1">],</span><br/><span class="hl-1">      </span><span class="hl-6">askSizes:</span><span class="hl-1"> [</span><span class="hl-8">4.5</span><span class="hl-1">, </span><span class="hl-8">7.8</span><span class="hl-1">, </span><span class="hl-8">10.2</span><span class="hl-1">, </span><span class="hl-8">8.5</span><span class="hl-1">, </span><span class="hl-8">20.0</span><span class="hl-1">],</span><br/><span class="hl-1">    },</span><br/><span class="hl-1">  ];</span><br/><br/><span class="hl-1">  </span><span class="hl-5">try</span><span class="hl-1"> {</span><br/><span class="hl-1">    </span><span class="hl-5">for</span><span class="hl-1"> (</span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">orderBook</span><span class="hl-1"> </span><span class="hl-4">of</span><span class="hl-1"> </span><span class="hl-6">orderBooks</span><span class="hl-1">) {</span><br/><span class="hl-1">      </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><br/><span class="hl-1">        .</span><span class="hl-0">table</span><span class="hl-1">(</span><span class="hl-2">&quot;order_book_l2&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">        .</span><span class="hl-0">symbol</span><span class="hl-1">(</span><span class="hl-2">&quot;symbol&quot;</span><span class="hl-1">, </span><span class="hl-6">orderBook</span><span class="hl-1">.</span><span class="hl-6">symbol</span><span class="hl-1">)</span><br/><span class="hl-1">        .</span><span class="hl-0">symbol</span><span class="hl-1">(</span><span class="hl-2">&quot;exchange&quot;</span><span class="hl-1">, </span><span class="hl-6">orderBook</span><span class="hl-1">.</span><span class="hl-6">exchange</span><span class="hl-1">)</span><br/><span class="hl-1">        .</span><span class="hl-0">arrayColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;bid_prices&quot;</span><span class="hl-1">, </span><span class="hl-6">orderBook</span><span class="hl-1">.</span><span class="hl-6">bidPrices</span><span class="hl-1">)</span><br/><span class="hl-1">        .</span><span class="hl-0">arrayColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;bid_sizes&quot;</span><span class="hl-1">, </span><span class="hl-6">orderBook</span><span class="hl-1">.</span><span class="hl-6">bidSizes</span><span class="hl-1">)</span><br/><span class="hl-1">        .</span><span class="hl-0">arrayColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;ask_prices&quot;</span><span class="hl-1">, </span><span class="hl-6">orderBook</span><span class="hl-1">.</span><span class="hl-6">askPrices</span><span class="hl-1">)</span><br/><span class="hl-1">        .</span><span class="hl-0">arrayColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;ask_sizes&quot;</span><span class="hl-1">, </span><span class="hl-6">orderBook</span><span class="hl-1">.</span><span class="hl-6">askSizes</span><span class="hl-1">)</span><br/><span class="hl-1">        .</span><span class="hl-0">at</span><span class="hl-1">(</span><span class="hl-6">orderBook</span><span class="hl-1">.</span><span class="hl-6">timestamp</span><span class="hl-1">, </span><span class="hl-2">&quot;ms&quot;</span><span class="hl-1">);</span><br/><span class="hl-1">    }</span><br/><br/><span class="hl-1">    </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">flush</span><span class="hl-1">();</span><br/><span class="hl-1">  } </span><span class="hl-5">finally</span><span class="hl-1"> {</span><br/><span class="hl-1">    </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">close</span><span class="hl-1">();</span><br/><span class="hl-1">  }</span><br/><span class="hl-1">}</span><br/><br/><span class="hl-0">run</span><span class="hl-1">().</span><span class="hl-0">then</span><span class="hl-1">(</span><span class="hl-6">console</span><span class="hl-1">.</span><span class="hl-6">log</span><span class="hl-1">).</span><span class="hl-0">catch</span><span class="hl-1">(</span><span class="hl-6">console</span><span class="hl-1">.</span><span class="hl-6">error</span><span class="hl-1">);</span>
+</code><button type="button">Copy</button></pre>
+
+<h2 id="decimal-列" class="tsd-anchor-link">DECIMAL 列<a href="#decimal-列" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>QuestDB 支持 <code>DECIMAL</code> 数据类型，可通过 <code>decimalColumnText</code>（文本）或 <code>decimalColumn</code>（二进制）摄入。</p>
+<h4 id="文本表示" class="tsd-anchor-link">文本表示<a href="#文本表示" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h4>
+<pre><code class="typescript"><span class="hl-5">import</span><span class="hl-1"> { </span><span class="hl-6">Sender</span><span class="hl-1"> } </span><span class="hl-5">from</span><span class="hl-1"> </span><span class="hl-2">&quot;questdb-qwp-bunclient&quot;</span><span class="hl-1">;</span><br/><br/><span class="hl-4">async</span><span class="hl-1"> </span><span class="hl-4">function</span><span class="hl-1"> </span><span class="hl-0">runDecimals</span><span class="hl-1">() {</span><br/><span class="hl-1">  </span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">sender</span><span class="hl-1"> = </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">Sender</span><span class="hl-1">.</span><span class="hl-0">fromConfig</span><span class="hl-1">(</span><span class="hl-2">&quot;ws::addr=127.0.0.1:9000&quot;</span><span class="hl-1">);</span><br/><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><br/><span class="hl-1">    .</span><span class="hl-0">table</span><span class="hl-1">(</span><span class="hl-2">&quot;fx&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    </span><span class="hl-3">// 文本形式保留字面量和精确的小数位数</span><br/><span class="hl-1">    .</span><span class="hl-0">decimalColumnText</span><span class="hl-1">(</span><span class="hl-2">&quot;mid&quot;</span><span class="hl-1">, </span><span class="hl-2">&quot;1.234500&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">atNow</span><span class="hl-1">();</span><br/><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">flush</span><span class="hl-1">();</span><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">close</span><span class="hl-1">();</span><br/><span class="hl-1">}</span><br/><br/><span class="hl-0">runDecimals</span><span class="hl-1">().</span><span class="hl-0">catch</span><span class="hl-1">(</span><span class="hl-6">console</span><span class="hl-1">.</span><span class="hl-6">error</span><span class="hl-1">);</span>
+</code><button type="button">Copy</button></pre>
+
+<h4 id="二进制表示" class="tsd-anchor-link">二进制表示<a href="#二进制表示" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h4>
+<p>推荐使用二进制表示，可获得更好的摄入性能和更小的负载（对大数值尤为明显）。</p>
+<pre><code class="typescript"><span class="hl-5">import</span><span class="hl-1"> { </span><span class="hl-6">Sender</span><span class="hl-1"> } </span><span class="hl-5">from</span><span class="hl-1"> </span><span class="hl-2">&quot;questdb-qwp-bunclient&quot;</span><span class="hl-1">;</span><br/><br/><span class="hl-4">async</span><span class="hl-1"> </span><span class="hl-4">function</span><span class="hl-1"> </span><span class="hl-0">runDecimals</span><span class="hl-1">() {</span><br/><span class="hl-1">  </span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">sender</span><span class="hl-1"> = </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">Sender</span><span class="hl-1">.</span><span class="hl-0">fromConfig</span><span class="hl-1">(</span><span class="hl-2">&quot;ws::addr=127.0.0.1:9000&quot;</span><span class="hl-1">);</span><br/><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><br/><span class="hl-1">    .</span><span class="hl-0">table</span><span class="hl-1">(</span><span class="hl-2">&quot;fx&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    </span><span class="hl-3">// 十进制数值以二进制形式发送</span><br/><span class="hl-1">    </span><span class="hl-3">// 123.456 = 123456 * 10^-3</span><br/><span class="hl-1">    .</span><span class="hl-0">decimalColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;mid&quot;</span><span class="hl-1">, </span><span class="hl-8">123456</span><span class="hl-4">n</span><span class="hl-1">, </span><span class="hl-8">3</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">atNow</span><span class="hl-1">();</span><br/><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">flush</span><span class="hl-1">();</span><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">close</span><span class="hl-1">();</span><br/><span class="hl-1">}</span><br/><br/><span class="hl-0">runDecimals</span><span class="hl-1">().</span><span class="hl-0">catch</span><span class="hl-1">(</span><span class="hl-6">console</span><span class="hl-1">.</span><span class="hl-6">error</span><span class="hl-1">);</span>
+</code><button type="button">Copy</button></pre>
+
+<h2 id="显式时间戳" class="tsd-anchor-link">显式时间戳<a href="#显式时间戳" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="typescript"><span class="hl-5">import</span><span class="hl-1"> { </span><span class="hl-6">Sender</span><span class="hl-1"> } </span><span class="hl-5">from</span><span class="hl-1"> </span><span class="hl-2">&quot;questdb-qwp-bunclient&quot;</span><span class="hl-1">;</span><br/><br/><span class="hl-4">async</span><span class="hl-1"> </span><span class="hl-4">function</span><span class="hl-1"> </span><span class="hl-0">run</span><span class="hl-1">() {</span><br/><span class="hl-1">  </span><span class="hl-4">const</span><span class="hl-1"> </span><span class="hl-7">sender</span><span class="hl-1"> = </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">Sender</span><span class="hl-1">.</span><span class="hl-0">fromConfig</span><span class="hl-1">(</span><span class="hl-2">&quot;ws::addr=localhost:9000&quot;</span><span class="hl-1">);</span><br/><br/><span class="hl-1">  </span><span class="hl-3">// 纳秒时间戳（TIMESTAMP_NS 列，范围 1677-2262 年）</span><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><br/><span class="hl-1">    .</span><span class="hl-0">table</span><span class="hl-1">(</span><span class="hl-2">&quot;events&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">stringColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;name&quot;</span><span class="hl-1">, </span><span class="hl-2">&quot;startup&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">at</span><span class="hl-1">(</span><span class="hl-8">1658484765000000000</span><span class="hl-4">n</span><span class="hl-1">, </span><span class="hl-2">&quot;ns&quot;</span><span class="hl-1">);</span><br/><br/><span class="hl-1">  </span><span class="hl-3">// 毫秒时间戳（TIMESTAMP 列，微秒精度，范围可超过 2262 年）</span><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><br/><span class="hl-1">    .</span><span class="hl-0">table</span><span class="hl-1">(</span><span class="hl-2">&quot;events&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">stringColumn</span><span class="hl-1">(</span><span class="hl-2">&quot;name&quot;</span><span class="hl-1">, </span><span class="hl-2">&quot;ingest&quot;</span><span class="hl-1">)</span><br/><span class="hl-1">    .</span><span class="hl-0">at</span><span class="hl-1">(</span><span class="hl-6">Date</span><span class="hl-1">.</span><span class="hl-0">now</span><span class="hl-1">(), </span><span class="hl-2">&quot;ms&quot;</span><span class="hl-1">);</span><br/><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">flush</span><span class="hl-1">();</span><br/><span class="hl-1">  </span><span class="hl-5">await</span><span class="hl-1"> </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-0">close</span><span class="hl-1">();</span><br/><span class="hl-1">}</span><br/><br/><span class="hl-0">run</span><span class="hl-1">().</span><span class="hl-0">catch</span><span class="hl-1">(</span><span class="hl-6">console</span><span class="hl-1">.</span><span class="hl-6">error</span><span class="hl-1">);</span>
+</code><button type="button">Copy</button></pre>
+
+<h2 id="配置选项" class="tsd-anchor-link">配置选项<a href="#配置选项" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p>格式：<code>protocol::key=value;key=value;</code>（解析规则与 nodejs 客户端一致：key 大小写敏感、
+<code>;;</code> 转义分号、布尔只接受 <code>on</code>/<code>off</code>、数值必须为整数）。</p>
+<table>
+<thead>
+<tr>
+<th>key</th>
+<th>说明</th>
+<th>默认值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>protocol</code></td>
+<td><code>ws</code>（明文）或 <code>wss</code>（TLS），必填</td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>addr</code></td>
+<td><code>host:port</code>，必填；端口省略时默认 9000</td>
+<td>9000</td>
+</tr>
+<tr>
+<td><code>username</code> / <code>password</code></td>
+<td>Basic 认证</td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>token</code></td>
+<td>Bearer 认证（仅企业版）</td>
+<td>-</td>
+</tr>
+<tr>
+<td><code>auto_flush</code></td>
+<td><code>on</code> / <code>off</code></td>
+<td><code>on</code></td>
+</tr>
+<tr>
+<td><code>auto_flush_rows</code></td>
+<td>行数触发 flush，0 禁用</td>
+<td>1000</td>
+</tr>
+<tr>
+<td><code>auto_flush_interval</code></td>
+<td>毫秒触发 flush，0 禁用</td>
+<td>1000</td>
+</tr>
+<tr>
+<td><code>request_timeout</code></td>
+<td>连接与 ACK 等待超时（ms）</td>
+<td>10000</td>
+</tr>
+<tr>
+<td><code>init_buf_size</code> / <code>max_buf_size</code></td>
+<td>缓冲尺寸（兼容选项）</td>
+<td>64KiB / 100MiB</td>
+</tr>
+<tr>
+<td><code>max_name_len</code></td>
+<td>表名/列名最大长度</td>
+<td>127</td>
+</tr>
+<tr>
+<td><code>tls_verify</code> / <code>tls_ca</code></td>
+<td>解析兼容；Bun WebSocket 暂不支持自定义 CA</td>
+<td>-</td>
+</tr>
+</tbody>
+</table>
+<h2 id="架构" class="tsd-anchor-link">架构<a href="#架构" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code><span class="hl-6">src</span><span class="hl-1">/</span><br/><span class="hl-1">├── </span><span class="hl-6">index</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1">          # </span><span class="hl-6">公共导出</span><span class="hl-1">（</span><span class="hl-6">与</span><span class="hl-1"> </span><span class="hl-6">nodejs</span><span class="hl-1"> </span><span class="hl-6">客户端对齐</span><span class="hl-1">）</span><br/><span class="hl-1">├── </span><span class="hl-6">sender</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1">         # </span><span class="hl-6">Sender</span><span class="hl-1">：</span><span class="hl-6">行构建</span><span class="hl-1"> </span><span class="hl-7">API</span><span class="hl-1">、</span><span class="hl-6">auto</span><span class="hl-1">-</span><span class="hl-6">flush</span><span class="hl-1">、</span><span class="hl-6">flush</span><span class="hl-1"> </span><span class="hl-6">串行化</span><br/><span class="hl-1">├── </span><span class="hl-6">options</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1">        # </span><span class="hl-6">配置字符串解析</span><span class="hl-1">（</span><span class="hl-6">nodejs</span><span class="hl-1"> </span><span class="hl-6">规则</span><span class="hl-1"> + </span><span class="hl-6">ws</span><span class="hl-1">/</span><span class="hl-6">wss</span><span class="hl-1">）</span><br/><span class="hl-1">├── </span><span class="hl-6">utils</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1">          # </span><span class="hl-6">工具函数</span><span class="hl-1">（</span><span class="hl-6">isInteger</span><span class="hl-1">/</span><span class="hl-6">timestampToMicros</span><span class="hl-1">/</span><span class="hl-6">bigintToTwosComplementBytes</span><span class="hl-1"> </span><span class="hl-6">等</span><span class="hl-1">）</span><br/><span class="hl-1">├── </span><span class="hl-6">logging</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1">        # </span><span class="hl-6">Logger</span><br/><span class="hl-1">├── </span><span class="hl-6">validation</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1">     # </span><span class="hl-6">表名</span><span class="hl-1">/</span><span class="hl-6">列名校验</span><br/><span class="hl-1">└── </span><span class="hl-6">qwp</span><span class="hl-1">/</span><br/><span class="hl-1">    ├── </span><span class="hl-6">constants</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1">  # </span><span class="hl-7">QWP</span><span class="hl-1"> </span><span class="hl-6">协议常量</span><span class="hl-1">（</span><span class="hl-6">类型码</span><span class="hl-1">/</span><span class="hl-6">flags</span><span class="hl-1">/</span><span class="hl-6">status</span><span class="hl-1">）</span><br/><span class="hl-1">    ├── </span><span class="hl-6">varint</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1">     # </span><span class="hl-7">LEB128</span><span class="hl-1"> + </span><span class="hl-6">ByteWriter</span><span class="hl-1">/</span><span class="hl-6">ByteReader</span><br/><span class="hl-1">    ├── </span><span class="hl-6">symboldict</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1"> # </span><span class="hl-6">全局符号字典</span><br/><span class="hl-1">    ├── </span><span class="hl-6">tablebuffer</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1"># </span><span class="hl-6">列式表缓冲</span><span class="hl-1">（</span><span class="hl-6">行提交</span><span class="hl-1">/</span><span class="hl-4">null</span><span class="hl-1"> </span><span class="hl-6">填充</span><span class="hl-1">）</span><br/><span class="hl-1">    ├── </span><span class="hl-6">encoder</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1">    # </span><span class="hl-7">QWP</span><span class="hl-1"> </span><span class="hl-6">消息编码</span><br/><span class="hl-1">    ├── </span><span class="hl-6">decoder</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1">    # </span><span class="hl-6">服务器响应解码</span><span class="hl-1">（</span><span class="hl-7">OK</span><span class="hl-1">/</span><span class="hl-6">error</span><span class="hl-1">）</span><br/><span class="hl-1">    └── </span><span class="hl-6">transport</span><span class="hl-1">.</span><span class="hl-6">ts</span><span class="hl-1">  # </span><span class="hl-6">Bun</span><span class="hl-1"> </span><span class="hl-6">WebSocket</span><span class="hl-1"> </span><span class="hl-6">传输</span><span class="hl-1">（</span><span class="hl-6">握手</span><span class="hl-1">/</span><span class="hl-6">发送</span><span class="hl-1">/</span><span class="hl-7">ACK</span><span class="hl-1"> </span><span class="hl-6">匹配</span><span class="hl-1">）</span>
+</code><button>Copy</button></pre>
+
+<h2 id="与-nodejs-客户端的差异" class="tsd-anchor-link">与 nodejs 客户端的差异<a href="#与-nodejs-客户端的差异" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li><strong>协议</strong>：nodejs 客户端使用 ILP（HTTP/TCP）；本项目使用 QWP（WebSocket）</li>
+<li><strong>协议标识</strong>：新增 <code>ws</code>/<code>wss</code>；<code>http</code>/<code>https</code>/<code>tcp</code>/<code>tcps</code> 不被接受</li>
+<li><strong>协议版本</strong>：QWP 仅支持 v1，<code>protocol_version</code> 恒为 <code>1</code></li>
+<li><strong>类型映射</strong>：<code>stringColumn</code>→VARCHAR、<code>intColumn</code>→LONG、<code>floatColumn</code>→DOUBLE、
+<code>timestampColumn(unit=&quot;ns&quot;)</code>→TIMESTAMP_NS，其余方法类型码一一对应</li>
+<li><strong>限制</strong>：Bun WebSocket 客户端无法配置自定义 CA 或禁用证书校验（<code>tls_ca</code>/<code>tls_verify</code>
+仅为配置兼容保留）；握手响应头（<code>X-QWP-Version</code>/<code>X-QWP-Max-Batch-Size</code>）不可读，
+字节预算使用本地默认值</li>
+</ul>
+<h2 id="测试" class="tsd-anchor-link">测试<a href="#测试" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>内容</th>
+<th>依赖</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>options.test.ts</code></td>
+<td>配置字符串解析（29 例）</td>
+<td>无</td>
+</tr>
+<tr>
+<td><code>sender.config.test.ts</code></td>
+<td>Sender 构造校验（22 例）</td>
+<td>无</td>
+</tr>
+<tr>
+<td><code>sender.buffer.test.ts</code></td>
+<td>QWP 编码字节断言 + 行构建校验（28 例）</td>
+<td>无</td>
+</tr>
+<tr>
+<td><code>sender.transport.test.ts</code></td>
+<td>握手/认证/ACK/错误处理（12 例，mock WS 服务器）</td>
+<td>无</td>
+</tr>
+<tr>
+<td><code>logging.test.ts</code></td>
+<td>默认日志（5 例）</td>
+<td>无</td>
+</tr>
+<tr>
+<td><code>utils.decimal.test.ts</code></td>
+<td>补码编码（4 例）</td>
+<td>无</td>
+</tr>
+<tr>
+<td><code>sender.integration.test.ts</code></td>
+<td>本机 QuestDB 端到端（9 例）</td>
+<td>QuestDB</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>与 nodejs 客户端的测试关系：与协议无关的测试（配置解析、构造校验、日志、工具函数）
+原样移植；ILP 专属的字节断言改写为 QWP 编码断言；TCP/HTTP 传输测试改写为
+mock WebSocket 服务器测试；TestContainers 集成测试改写为本机 QuestDB。</p>
+</blockquote>
+<h2 id="许可证" class="tsd-anchor-link">许可证<a href="#许可证" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p><a href="media/LICENSE">Apache-2.0</a>。实现参考了 <a href="https://github.com/questdb/java-questdb-client">questdb/java-questdb-client</a>
+与 <a href="https://github.com/questdb/nodejs-questdb-client">questdb/nodejs-questdb-client</a>。</p>
+</div></div>
+<div class="col-sidebar">
+<div class="page-menu">
+<div class="tsd-navigation settings">
+<details class="tsd-accordion"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>Settings</h3></summary>
+<div class="tsd-accordion-details">
+<div class="tsd-filter-visibility"><span class="settings-label">Member Visibility</span>
+<ul id="tsd-filter-options">
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-external" name="external"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>External</span></label></li></ul></div>
+<div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
+<details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>On This Page</h3></summary>
+<div class="tsd-accordion-details"><a href="#questdb-qwp-bunclient"><span>questdb-<wbr/>qwp-<wbr/>bunclient</span></a>
+<ul>
+<li><a href="#特性"><span>特性</span></a></li>
+<li><a href="#安装"><span>安装</span></a></li>
+<li><a href="#基本用法"><span>基本用法</span></a></li>
+<li><a href="#认证"><span>认证</span></a></li>
+<li>
+<ul>
+<li>
+<ul>
+<li><a href="#用户名密码认证（basic）"><span>用户名密码认证（<wbr/>Basic）</span></a></li>
+<li><a href="#bearer-token-认证"><span>Bearer token 认证</span></a></li></ul></li></ul></li>
+<li><a href="#数组列"><span>数组列</span></a></li>
+<li><a href="#decimal-列"><span>DECIMAL 列</span></a></li>
+<li>
+<ul>
+<li>
+<ul>
+<li><a href="#文本表示"><span>文本表示</span></a></li>
+<li><a href="#二进制表示"><span>二进制表示</span></a></li></ul></li></ul></li>
+<li><a href="#显式时间戳"><span>显式时间戳</span></a></li>
+<li><a href="#配置选项"><span>配置选项</span></a></li>
+<li><a href="#架构"><span>架构</span></a></li>
+<li><a href="#与-nodejs-客户端的差异"><span>与 nodejs 客户端的差异</span></a></li>
+<li><a href="#测试"><span>测试</span></a></li>
+<li><a href="#许可证"><span>许可证</span></a></li></ul></div></details></div>
+<div class="site-menu">
+<nav class="tsd-navigation"><a href="modules.html">questdb-qwp-bunclient</a>
+<ul class="tsd-small-nested-navigation" id="tsd-nav-container">
+<li>Loading...</li></ul></nav></div></div></div><footer>
+<p class="tsd-generator">Generated using <a href="https://typedoc.org/" target="_blank">TypeDoc</a></p></footer>
+<div class="overlay"></div></body></html>

@@ -1,0 +1,203 @@
+/**
+ * Primitive types for QuestDB arrays. <br>
+ * Currently only <i>number</i> arrays are supported by the server.
+ */
+type ArrayPrimitive = "number" | "boolean" | "string" | null;
+
+/**
+ * Supported timestamp units for QuestDB operations.
+ */
+type TimestampUnit = "ns" | "us" | "ms";
+
+/**
+ * Type guard to check if a value is a boolean.
+ * @param {unknown} value - The value to check
+ * @returns True if the value is a boolean, false otherwise
+ */
+function isBoolean(value: unknown): value is boolean {
+  return typeof value === "boolean";
+}
+
+/**
+ * Type guard to check if a value is an integer within specified bounds.
+ * @param {unknown} value - The value to check
+ * @param {number} lowerBound - The minimum allowed value (inclusive)
+ * @returns True if the value is an integer >= lowerBound, false otherwise
+ */
+function isInteger(value: unknown, lowerBound: number): value is number {
+  return (
+    typeof value === "number" && Number.isInteger(value) && value >= lowerBound
+  );
+}
+
+/**
+ * Converts a timestamp from the specified unit to microseconds.
+ * @param {bigint} timestamp - The timestamp value as a bigint
+ * @param {TimestampUnit} unit - The source timestamp unit
+ * @returns The timestamp converted to microseconds
+ * @throws Error if the timestamp unit is unknown
+ */
+function timestampToMicros(timestamp: bigint, unit: TimestampUnit): bigint {
+  switch (unit) {
+    case "ns":
+      return timestamp / 1000n;
+    case "us":
+      return timestamp;
+    case "ms":
+      return timestamp * 1000n;
+    default:
+      throw new Error(`Unknown timestamp unit: ${unit}`);
+  }
+}
+
+/**
+ * Converts a timestamp from the specified unit to nanoseconds.
+ * @param {bigint} timestamp - The timestamp value as a bigint
+ * @param {TimestampUnit} unit - The source timestamp unit
+ * @returns The timestamp converted to nanoseconds
+ * @throws Error if the timestamp unit is unknown
+ */
+function timestampToNanos(timestamp: bigint, unit: TimestampUnit): bigint {
+  switch (unit) {
+    case "ns":
+      return timestamp;
+    case "us":
+      return timestamp * 1000n;
+    case "ms":
+      return timestamp * 1000_000n;
+    default:
+      throw new Error(`Unknown timestamp unit: ${unit}`);
+  }
+}
+
+/**
+ * Analyzes the dimensions of a nested array structure.
+ * @param {unknown} data - The array to analyze
+ * @returns Array of dimension sizes at each nesting level
+ * @throws Error if any dimension has zero length
+ */
+function getDimensions(data: unknown): number[] {
+  const dimensions: number[] = [];
+  while (Array.isArray(data)) {
+    dimensions.push(data.length);
+    data = data[0];
+  }
+  return dimensions;
+}
+
+/**
+ * Validates an array structure. <br>
+ * Validation fails if:
+ * - <i>data</i> is not an array
+ * - the array is irregular: the length of its sub-arrays are different
+ * - the array is not homogenous: the array contains mixed types
+ * @param {unknown[]} data - The array to validate
+ * @param {number[]} dimensions - The shape of the array
+ * @returns The primitive type of the array's elements
+ * @throws Error if the validation fails
+ */
+function validateArray(data: unknown[], dimensions: number[]): ArrayPrimitive {
+  if (data === null || data === undefined) {
+    return null;
+  }
+  if (!Array.isArray(data)) {
+    throw new Error(
+      `The value must be an array [value=${JSON.stringify(data)}, type=${typeof data}]`,
+    );
+  }
+
+  let expectedType: ArrayPrimitive = null;
+
+  function checkArray(
+    array: unknown[],
+    depth: number = 0,
+    path: string = "",
+  ): void {
+    const expectedLength = dimensions[depth];
+    if (array.length !== expectedLength) {
+      throw new Error(
+        `Lengths of sub-arrays do not match [expected=${expectedLength}, actual=${array.length}, dimensions=[${dimensions}], path=${path}]`,
+      );
+    }
+
+    if (depth < dimensions.length - 1) {
+      // intermediate level, expecting arrays
+      for (let i = 0; i < array.length; i++) {
+        if (!Array.isArray(array[i])) {
+          throw new Error(
+            `Mixed types found [expected=array, current=${typeof array[i]}, path=${path}[${i}]]`,
+          );
+        }
+        checkArray(array[i] as unknown[], depth + 1, `${path}[${i}]`);
+      }
+    } else {
+      // leaf level, expecting primitives
+      if (expectedType === null && array[0] !== undefined) {
+        expectedType = typeof array[0] as ArrayPrimitive;
+      }
+
+      for (let i = 0; i < array.length; i++) {
+        const currentType = typeof array[i] as ArrayPrimitive;
+        if (currentType !== expectedType) {
+          throw new Error(
+            expectedType !== null
+              ? `Mixed types found [expected=${expectedType}, current=${currentType}, path=${path}[${i}]]`
+              : `Unsupported array type [type=${currentType}]`,
+          );
+        }
+      }
+    }
+  }
+
+  checkArray(data);
+  return expectedType;
+}
+
+/**
+ * Converts a bigint into a two's complement big-endian byte array.
+ * Produces the minimal-width representation that preserves the sign.
+ * @param {bigint} value - The value to serialise
+ * @returns {number[]} Byte array in big-endian order
+ */
+function bigintToTwosComplementBytes(value: bigint): number[] {
+  if (value === 0n) {
+    return [0];
+  }
+
+  const bytes: number[] = [];
+  const byteMask = 0xffn;
+
+  if (value > 0n) {
+    let tmp = value;
+    while (tmp > 0n) {
+      bytes.unshift(Number(tmp & byteMask));
+      tmp >>= 8n;
+    }
+    if (bytes[0]! & 0x80) {
+      bytes.unshift(0);
+    }
+    return bytes;
+  }
+
+  let tmp = value;
+  while (tmp < -1n) {
+    bytes.unshift(Number(tmp & byteMask));
+    tmp >>= 8n;
+  }
+  bytes.unshift(Number(tmp & byteMask));
+  if (!(bytes[0]! & 0x80)) {
+    bytes.unshift(0xff);
+  }
+  return bytes;
+}
+
+export {
+  isBoolean,
+  isInteger,
+  timestampToMicros,
+  timestampToNanos,
+  getDimensions,
+  validateArray,
+  bigintToTwosComplementBytes,
+};
+export type { TimestampUnit, ArrayPrimitive };
