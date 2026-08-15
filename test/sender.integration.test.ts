@@ -73,6 +73,21 @@ async function dropTable(name: string): Promise<void> {
   }
 }
 
+async function createTable(
+  name: string,
+  ddl: string,
+): Promise<void> {
+  const response = await fetch(
+    `${BASE_URL}/exec?query=${encodeURIComponent(ddl)}`,
+  );
+  const json = (await response.json()) as { error?: string };
+  if (!response.ok || json.error) {
+    throw new Error(
+      `Failed to create table: ${json.error ?? await response.text()}`,
+    );
+  }
+}
+
 describe("Sender tests with a local QuestDB instance", function () {
   beforeAll(async () => {
     available = await qdbAvailable();
@@ -277,6 +292,91 @@ describe("Sender tests with a local QuestDB instance", function () {
     await dropTable(tableA);
     await dropTable(tableB);
   });
+
+  it("recovers silently swallowed writes after a table is dropped and recreated via REST", async () => {
+    if (!available) return;
+    const table = "bun_integ_stale_recreate";
+    await dropTable(table);
+    const sender = await Sender.fromConfig(
+      `ws::addr=localhost:${QDB_WS_PORT};auto_flush=off`,
+    );
+
+    sender
+      .table(table)
+      .symbol("device_id", "d1")
+      .intColumn("value", 1)
+      .at(1_000_000n, "us");
+    expect(await sender.flush()).toBe(true);
+
+    // Drop and recreate the table with the same schema while the same QWP
+    // connection stays open. The server's per-connection writer cache goes
+    // stale and silently drops the next one or two frames.
+    await dropTable(table);
+    await createTable(
+      table,
+      `create table "${table}" (ts timestamp, device_id symbol, value int) ` +
+        `timestamp(ts) partition by day dedup upsert keys(ts, device_id)`,
+    );
+
+    sender
+      .table(table)
+      .symbol("device_id", "d1")
+      .intColumn("value", 2)
+      .at(2_000_000n, "us");
+    sender
+      .table(table)
+      .symbol("device_id", "d1")
+      .intColumn("value", 3)
+      .at(3_000_000n, "us");
+    expect(await sender.flush()).toBe(true);
+    await sender.close();
+
+    // the client re-sends the swallowed rows; dedup keeps retries idempotent
+    expect(await waitForCount(table, 2, 20_000)).toBe(2);
+    await dropTable(table);
+  }, 30_000);
+
+  it("recovers silently swallowed writes after a table is dropped and recreated by QWP", async () => {
+    if (!available) return;
+    const table = "bun_integ_stale_auto";
+    await dropTable(table);
+    const sender = await Sender.fromConfig(
+      `ws::addr=localhost:${QDB_WS_PORT};auto_flush=off`,
+    );
+
+    sender
+      .table(table)
+      .symbol("device_id", "d1")
+      .intColumn("value", 1)
+      .at(1_000_000n, "us");
+    expect(await sender.flush()).toBe(true);
+    await dropTable(table);
+
+    // the next write lets QWP auto-create the table on the same connection
+    sender
+      .table(table)
+      .symbol("device_id", "d1")
+      .intColumn("value", 2)
+      .at(2_000_000n, "us");
+    sender
+      .table(table)
+      .symbol("device_id", "d1")
+      .intColumn("value", 3)
+      .at(3_000_000n, "us");
+    expect(await sender.flush()).toBe(true);
+    await sender.close();
+
+    // QWP auto-created tables have no dedup keys, so the retried frame may
+    // insert duplicates; the required property is that no row is lost.
+    expect(await waitForCount(table, 2, 20_000)).toBeGreaterThanOrEqual(2);
+    const values = await runSelect<{ value: number }>(
+      `select value from "${table}"`,
+    );
+    const seen = new Set(values.map((row) => row.value));
+    expect(seen.has(2)).toBe(true);
+    expect(seen.has(3)).toBe(true);
+    await dropTable(table);
+  }, 30_000);
 
   it("ingests all data without loss under high load with auto-flush", async () => {
     if (!available) return;

@@ -112,6 +112,10 @@ type DeprecatedOptions = {
  * </li>
  * <li> retry_timeout: <i>integer</i> - Accepted for configuration compatibility; the WebSocket transport does not retry.
  * </li>
+ * <li> stale_retries: <i>integer</i> - Number of times a single table whose server
+ * acknowledgement does not advance its seqTxn is re-sent before its data is
+ * retained for the next flush, defaults to 3.
+ * </li>
  * </ul>
  * <br>
  * Other options
@@ -142,6 +146,7 @@ class SenderOptions {
   request_min_throughput?: number;
   request_timeout?: number;
   retry_timeout?: number;
+  stale_retries?: number;
 
   init_buf_size?: number | null;
   max_buf_size?: number | null;
@@ -329,6 +334,7 @@ const ValidConfigKeys = [
   "request_min_throughput",
   "request_timeout",
   "retry_timeout",
+  "stale_retries",
   "init_buf_size",
   "max_buf_size",
   "max_name_len",
@@ -459,6 +465,7 @@ function parseRequestTimeoutOptions(options: SenderOptions) {
   parseInteger(options, "request_min_throughput", "request min throughput", 1);
   parseInteger(options, "request_timeout", "request timeout", 1);
   parseInteger(options, "retry_timeout", "retry timeout", 0);
+  parseInteger(options, "stale_retries", "stale table retries", 1);
 }
 
 function parseMaxNameLength(options: SenderOptions) {

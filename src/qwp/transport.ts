@@ -14,6 +14,7 @@ import {
   VERSION,
 } from "./constants";
 import { decodeResponse } from "./decoder";
+import type { QwpResponse } from "./decoder";
 
 const DEFAULT_QWP_AUTO_FLUSH_ROWS = 1000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
@@ -23,7 +24,7 @@ const WRITE_PATH = "/write/v4";
 /** Default connect/ack timeout derived from request_timeout, when set. */
 
 interface PendingRequest {
-  resolve: () => void;
+  resolve: (response: QwpResponse) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -154,7 +155,7 @@ export class QwpTransport {
    * Sends an encoded QWP message and waits for the server's acknowledgement.
    * Establishes the connection first if it is not yet open.
    */
-  async send(frame: Uint8Array): Promise<void> {
+  async send(frame: Uint8Array): Promise<QwpResponse> {
     if (!this.isConnected()) {
       await this.connect();
     }
@@ -164,7 +165,7 @@ export class QwpTransport {
     }
 
     const seq = this.nextSeq++;
-    const response = new Promise<void>((resolve, reject) => {
+    const response = new Promise<QwpResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(seq);
         reject(
@@ -255,16 +256,16 @@ export class QwpTransport {
       return;
     }
 
-    this.resolvePending(response.sequence);
+    this.resolvePending(response.sequence, response);
   }
 
-  private resolvePending(sequence: bigint): void {
+  private resolvePending(sequence: bigint, response: QwpResponse): void {
     const seq = Number(sequence);
     const request = this.pending.get(seq);
     if (request) {
       this.pending.delete(seq);
       clearTimeout(request.timer);
-      request.resolve();
+      request.resolve(response);
     }
   }
 

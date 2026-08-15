@@ -51,6 +51,19 @@ describe("Sender configuration options suite", function () {
       "The 'host' option is mandatory",
     );
   });
+
+  it("accepts the stale_retries option from the config string", async function () {
+    const sender = await Sender.fromConfig("ws::addr=host;stale_retries=5");
+    expect(staleRetries(sender)).toBe(5);
+    await sender.close();
+  });
+
+  it("rejects an invalid stale_retries value", async function () {
+    await expect((async () => {
+      const sender = await Sender.fromConfig("ws::addr=host;stale_retries=0");
+      await sender.close();
+    })()).rejects.toThrow("Invalid stale table retries option: 0");
+  });
 });
 
 describe("Sender options test suite", function () {
@@ -243,4 +256,9 @@ describe("Sender options test suite", function () {
 function logger(sender: Sender) {
   // @ts-expect-error - Accessing private field
   return sender.log;
+}
+
+function staleRetries(sender: Sender) {
+  // @ts-expect-error - Accessing private field
+  return sender.staleRetries;
 }

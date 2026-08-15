@@ -7,6 +7,7 @@ import { QwpEncoder } from "./qwp/encoder";
 import { QwpTransport } from "./qwp/transport";
 import { QwpTableBuffer } from "./qwp/tablebuffer";
 import type { QwpValue } from "./qwp/tablebuffer";
+import type { QwpResponse } from "./qwp/decoder";
 import { GlobalSymbolDictionary } from "./qwp/symboldict";
 import {
   TYPE_BOOLEAN,
@@ -38,6 +39,7 @@ import {
 const DEFAULT_AUTO_FLUSH_INTERVAL = 1000; // 1 sec
 const DEFAULT_BUFFER_SIZE = 65536; // 64 KiB
 const DEFAULT_MAX_BUFFER_SIZE = 104857600; // 100 MiB
+const MAX_STALE_TABLE_RETRIES = 3; // measured worst case needs 2 retries
 
 /**
  * The QuestDB client's API provides methods to connect to the database, ingest data, and close the connection.
@@ -78,11 +80,23 @@ class Sender {
   private readonly encoder: QwpEncoder;
   private readonly symbolDict = new GlobalSymbolDictionary();
   private readonly tables = new Map<string, QwpTableBuffer>();
+  /**
+   * Per-table acknowledged transaction sequence numbers, keyed by lower-case
+   * table name (QuestDB identifiers are case-insensitive).
+   */
+  private readonly acknowledgedSeqTxns = new Map<string, bigint>();
+  /**
+   * Tables whose writes were silently dropped after a server-side DROP and
+   * recreate and whose retry budget was exhausted. Their data is re-sent
+   * first on the next flush, so nothing is ever lost.
+   */
+  private readonly staleRetryQueue = new Map<string, QwpTableBuffer>();
   private currentTable: QwpTableBuffer | null = null;
 
   private readonly autoFlush: boolean;
   private readonly autoFlushRows: number;
   private readonly autoFlushInterval: number;
+  private readonly staleRetries: number;
   private lastFlushTime = 0;
   private pendingRowCount = 0;
   /** Tail of the serialized flush queue; resolves when all queued flushes complete. */
@@ -139,6 +153,9 @@ class Sender {
     this.autoFlushInterval = isInteger(options.auto_flush_interval, 0)
       ? options.auto_flush_interval
       : DEFAULT_AUTO_FLUSH_INTERVAL;
+    this.staleRetries = isInteger(options.stale_retries, 1)
+      ? options.stale_retries
+      : MAX_STALE_TABLE_RETRIES;
 
     this.reset();
   }
@@ -213,6 +230,19 @@ class Sender {
     await previous;
 
     try {
+      // Tables that exhausted their retry budget on a previous flush are
+      // re-sent first, so they are never overwritten by a table recreation
+      // and never lost while new rows keep arriving.
+      let sent = false;
+      if (this.staleRetryQueue.size > 0) {
+        const queued = [...this.staleRetryQueue];
+        this.staleRetryQueue.clear();
+        for (const [tableName, buffer] of queued) {
+          await this.resendStaleTable(tableName, buffer);
+          sent = true;
+        }
+      }
+
       // Collect the tables with committed rows and swap in a fresh buffer for
       // each of them. Rows written while the flush is in flight go to the new
       // buffers and are never cleared by this flush.
@@ -227,7 +257,7 @@ class Sender {
         }
       }
       if (tablesToSend.length === 0) {
-        return false;
+        return sent;
       }
 
       const frame = this.encoder.encode(tablesToSend);
@@ -237,7 +267,8 @@ class Sender {
       );
       this.resetAutoFlush();
 
-      await this.transport.send(frame);
+      const response = await this.transport.send(frame);
+      await this.verifyAcks(tablesToSend, response);
       return true;
     } finally {
       release();
@@ -260,6 +291,12 @@ class Sender {
       this.log(
         "warn",
         "Buffer contains data which has not been flushed, this data will be lost",
+      );
+    }
+    if (this.staleRetryQueue.size > 0) {
+      this.log(
+        "warn",
+        "Retry queue contains data which has not been acknowledged, this data will be lost",
       );
     }
     await this.transport.close();
@@ -620,6 +657,62 @@ class Sender {
     ) {
       await this.flush();
     }
+  }
+
+  /**
+   * Verifies the per-table acknowledgements of a just-sent frame and re-sends
+   * any table whose seqTxn did not advance. The server silently drops rows
+   * for a while after a table is DROPped and recreated, without returning an
+   * error; the missing or non-advancing seqTxn is the only signal.
+   */
+  private async verifyAcks(
+    tables: QwpTableBuffer[],
+    response: QwpResponse,
+  ): Promise<void> {
+    for (const table of tables) {
+      const key = table.tableName.toLowerCase();
+      const known = this.acknowledgedSeqTxns.get(key) ?? 0n;
+      const ack = response.tables.find(
+        (t) => t.name.toLowerCase() === key,
+      );
+      if (ack && ack.seqTxn > known) {
+        this.acknowledgedSeqTxns.set(key, ack.seqTxn);
+        continue;
+      }
+      await this.resendStaleTable(key, table);
+    }
+  }
+
+  /**
+   * Re-sends a single table as its own frame until the server ack advances
+   * the table's seqTxn or the retry budget is exhausted. On exhaustion the
+   * table's data is retained in the stale retry queue for the next flush and
+   * a self-explanatory error is thrown.
+   */
+  private async resendStaleTable(
+    key: string,
+    table: QwpTableBuffer,
+  ): Promise<void> {
+    const known = this.acknowledgedSeqTxns.get(key) ?? 0n;
+    for (let attempt = 1; attempt <= this.staleRetries; attempt++) {
+      this.log(
+        "warn",
+        `Table '${table.tableName}' was not acknowledged with an advancing seqTxn, retrying (${attempt}/${this.staleRetries})`,
+      );
+      const frame = this.encoder.encode([table]);
+      const response = await this.transport.send(frame);
+      const ack = response.tables.find(
+        (t) => t.name.toLowerCase() === key,
+      );
+      if (ack && ack.seqTxn > known) {
+        this.acknowledgedSeqTxns.set(key, ack.seqTxn);
+        return;
+      }
+    }
+    this.staleRetryQueue.set(key, table);
+    throw new Error(
+      `Table '${table.tableName}' was not acknowledged with an advancing seqTxn after ${this.staleRetries} retries; the table may have just been DROPped and recreated. The data has been retained and will be retried on the next flush.`,
+    );
   }
 }
 
