@@ -5,6 +5,7 @@ import { SenderOptions } from "./options";
 import type { ExtraOptions } from "./options";
 import { QwpEncoder } from "./qwp/encoder";
 import { QwpTransport } from "./qwp/transport";
+import { QwpError, toQwpError } from "./qwp/errors";
 import { QwpTableBuffer } from "./qwp/tablebuffer";
 import type { QwpValue } from "./qwp/tablebuffer";
 import type { QwpResponse } from "./qwp/decoder";
@@ -40,6 +41,8 @@ const DEFAULT_AUTO_FLUSH_INTERVAL = 1000; // 1 sec
 const DEFAULT_BUFFER_SIZE = 65536; // 64 KiB
 const DEFAULT_MAX_BUFFER_SIZE = 104857600; // 100 MiB
 const MAX_STALE_TABLE_RETRIES = 3; // measured worst case needs 2 retries
+const DEFAULT_REPLAY_BACKOFF_MS = 100;
+const MIN_REPLAY_BUDGET_MS = 1;
 
 /**
  * The QuestDB client's API provides methods to connect to the database, ingest data, and close the connection.
@@ -76,7 +79,8 @@ const MAX_STALE_TABLE_RETRIES = 3; // measured worst case needs 2 retries
  * </p>
  */
 class Sender {
-  private readonly transport: QwpTransport;
+  private transport: QwpTransport;
+  private readonly options: SenderOptions;
   private readonly encoder: QwpEncoder;
   private readonly symbolDict = new GlobalSymbolDictionary();
   private readonly tables = new Map<string, QwpTableBuffer>();
@@ -91,12 +95,20 @@ class Sender {
    * first on the next flush, so nothing is ever lost.
    */
   private readonly staleRetryQueue = new Map<string, QwpTableBuffer>();
+  /**
+   * The last frame whose delivery could not be determined (ack timeout or
+   * connection loss). It is retained and replayed byte-for-byte before newer
+   * rows, so a timed-out write is never silently discarded.
+   */
+  private pendingWrite: { frame: Uint8Array } | null = null;
   private currentTable: QwpTableBuffer | null = null;
 
   private readonly autoFlush: boolean;
   private readonly autoFlushRows: number;
   private readonly autoFlushInterval: number;
   private readonly staleRetries: number;
+  private readonly resendOnUnknown: boolean;
+  private readonly replayBackoffMs: number;
   private lastFlushTime = 0;
   private pendingRowCount = 0;
   /** Tail of the serialized flush queue; resolves when all queued flushes complete. */
@@ -137,6 +149,7 @@ class Sender {
     }
 
     this.log = typeof options.log === "function" ? options.log : log;
+    this.options = options;
     this.transport = new QwpTransport(options, this.log);
     this.encoder = new QwpEncoder(this.symbolDict);
     this.maxNameLength = isInteger(options.max_name_len, 1)
@@ -156,6 +169,12 @@ class Sender {
     this.staleRetries = isInteger(options.stale_retries, 1)
       ? options.stale_retries
       : MAX_STALE_TABLE_RETRIES;
+    this.resendOnUnknown = isBoolean(options.resend_on_unknown)
+      ? options.resend_on_unknown
+      : false;
+    this.replayBackoffMs = isInteger(options.replay_backoff_ms, 0)
+      ? options.replay_backoff_ms
+      : DEFAULT_REPLAY_BACKOFF_MS;
 
     this.reset();
   }
@@ -215,32 +234,59 @@ class Sender {
    * Flushes are serialized: a flush that arrives while another one is in
    * flight waits for it to finish, so rows buffered by an in-flight flush
    * are never collected twice.
+   *
+   * When delivery cannot be determined (ack timeout or connection loss), the
+   * frame is retained and re-thrown as a {@link QwpError} with
+   * `delivery === "unknown"`. With `resend_on_unknown=on`, the same frame is
+   * replayed once on a fresh connection before giving up.
+   *
+   * @param deadlineMs optional total budget for this flush, including replay
+   *        and stale-table attempts
    * @returns Promise resolving to true if data was sent, false if the buffer was empty
    */
-  async flush(): Promise<boolean> {
+  async flush(deadlineMs?: number): Promise<boolean> {
     this.ensureOpen();
     this.ensureNoInProgressRow();
 
-    const previous = this.flushTail;
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.flushTail = current;
-    await previous;
+    return this.withFlushLock(async () => {
+      const deadlineAt = deadlineFrom(deadlineMs);
+      let sent = false;
 
-    try {
       // Tables that exhausted their retry budget on a previous flush are
       // re-sent first, so they are never overwritten by a table recreation
       // and never lost while new rows keep arriving.
-      let sent = false;
       if (this.staleRetryQueue.size > 0) {
         const queued = [...this.staleRetryQueue];
         this.staleRetryQueue.clear();
-        for (const [tableName, buffer] of queued) {
-          await this.resendStaleTable(tableName, buffer);
+        for (let i = 0; i < queued.length; i++) {
+          const [tableName, buffer] = queued[i]!;
+          try {
+            await this.resendStaleTable(tableName, buffer, deadlineAt);
+          } catch (error) {
+            for (let j = i; j < queued.length; j++) {
+              const [name, pending] = queued[j]!;
+              this.staleRetryQueue.set(name, pending);
+            }
+            throw error;
+          }
           sent = true;
         }
+      }
+
+      // A retained unacknowledged frame is replayed byte-for-byte before any
+      // newer rows, so a timed-out write is neither dropped nor reordered.
+      if (this.pendingWrite) {
+        this.ensureBudget(deadlineAt, "unknown");
+        try {
+          await this.sendFrame(this.pendingWrite.frame, deadlineAt);
+        } catch (error) {
+          if (!shouldRetain(error)) {
+            this.pendingWrite = null;
+          }
+          throw error;
+        }
+        this.pendingWrite = null;
+        sent = true;
       }
 
       // Collect the tables with committed rows and swap in a fresh buffer for
@@ -267,11 +313,174 @@ class Sender {
       );
       this.resetAutoFlush();
 
-      const response = await this.transport.send(frame);
-      await this.verifyAcks(tablesToSend, response);
+      let response: QwpResponse;
+      try {
+        response = await this.sendFrame(frame, deadlineAt);
+      } catch (error) {
+        if (shouldRetain(error)) {
+          this.pendingWrite = { frame };
+        }
+        throw error;
+      }
+      await this.verifyAcks(tablesToSend, response, deadlineAt);
       return true;
+    });
+  }
+
+  /** True when a frame from a previous flush is still awaiting a decision. */
+  hasPendingWrite(): boolean {
+    return this.pendingWrite !== null;
+  }
+
+  /**
+   * Retries the retained unacknowledged frame, if any.
+   * @returns true when a frame was retried, false when nothing was pending
+   */
+  async retryPending(deadlineMs?: number): Promise<boolean> {
+    this.ensureOpen();
+    return this.withFlushLock(async () => {
+      if (!this.pendingWrite) {
+        return false;
+      }
+      const deadlineAt = deadlineFrom(deadlineMs);
+      this.ensureBudget(deadlineAt, "unknown");
+      try {
+        await this.sendFrame(this.pendingWrite.frame, deadlineAt);
+      } catch (error) {
+        if (!shouldRetain(error)) {
+          this.pendingWrite = null;
+        }
+        throw error;
+      }
+      this.pendingWrite = null;
+      return true;
+    });
+  }
+
+  /**
+   * Discards the retained unacknowledged frame.
+   * @returns true when a frame was discarded, false when nothing was pending
+   */
+  async discardPending(): Promise<boolean> {
+    return this.withFlushLock(async () => {
+      const hadPending = this.pendingWrite !== null;
+      this.pendingWrite = null;
+      return hadPending;
+    });
+  }
+
+  /**
+   * Serializes a write operation behind any in-flight flush.
+   */
+  private async withFlushLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.flushTail;
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.flushTail = current;
+    await previous;
+    try {
+      return await operation();
     } finally {
       release();
+    }
+  }
+
+  /**
+   * Sends a frame and, when the error permits it, replays the exact same
+   * bytes once on a fresh connection.
+   */
+  private async sendFrame(
+    frame: Uint8Array,
+    deadlineAt: number,
+  ): Promise<QwpResponse> {
+    const timeoutMs = this.remainingBudget(deadlineAt);
+    if (timeoutMs <= 0) {
+      throw deadlineError(false);
+    }
+
+    try {
+      return await this.transport.send(frame, timeoutMs);
+    } catch (error) {
+      const qwpError = toQwpError(error);
+      if (!this.shouldReplay(qwpError, deadlineAt)) {
+        throw qwpError;
+      }
+
+      await this.resetTransport();
+      await this.backoff(deadlineAt);
+      if (this.remainingBudget(deadlineAt) <= MIN_REPLAY_BUDGET_MS) {
+        throw qwpError;
+      }
+
+      this.log(
+        "warn",
+        `Replaying unacknowledged frame after ${qwpError.code}: ${qwpError.message}`,
+      );
+      try {
+        return await this.transport.send(
+          frame,
+          this.remainingBudget(deadlineAt),
+        );
+      } catch (replayError) {
+        throw toQwpError(replayError);
+      }
+    }
+  }
+
+  private shouldReplay(error: QwpError, deadlineAt: number): boolean {
+    if (!error.retryable) {
+      return false;
+    }
+    // A re-send after an unknown outcome can duplicate rows unless the target
+    // tables deduplicate on the timestamp, so it is opt-in.
+    if (error.delivery === "unknown" && !this.resendOnUnknown) {
+      return false;
+    }
+    return this.remainingBudget(deadlineAt) > MIN_REPLAY_BUDGET_MS;
+  }
+
+  private remainingBudget(deadlineAt: number): number {
+    if (!Number.isFinite(deadlineAt)) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return deadlineAt - Date.now();
+  }
+
+  private ensureBudget(
+    deadlineAt: number,
+    delivery: "unknown" | "not_sent",
+  ): void {
+    if (this.remainingBudget(deadlineAt) <= 0) {
+      throw deadlineError(delivery === "unknown");
+    }
+  }
+
+  private async backoff(deadlineAt: number): Promise<void> {
+    if (this.replayBackoffMs <= 0) {
+      return;
+    }
+    const waitMs = Math.min(
+      this.replayBackoffMs,
+      Math.max(0, this.remainingBudget(deadlineAt)),
+    );
+    if (waitMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+
+  /**
+   * Drops the current connection and creates a fresh transport, so a replay
+   * does not sit behind the same server-side ack queue that just timed out.
+   */
+  private async resetTransport(): Promise<void> {
+    const failed = this.transport;
+    this.transport = new QwpTransport(this.options, this.log);
+    try {
+      await failed.close();
+    } catch {
+      // the original write error is more useful
     }
   }
 
@@ -297,6 +506,12 @@ class Sender {
       this.log(
         "warn",
         "Retry queue contains data which has not been acknowledged, this data will be lost",
+      );
+    }
+    if (this.pendingWrite) {
+      this.log(
+        "warn",
+        "A pending unacknowledged frame is still retained, this data will be lost",
       );
     }
     await this.transport.close();
@@ -668,8 +883,10 @@ class Sender {
   private async verifyAcks(
     tables: QwpTableBuffer[],
     response: QwpResponse,
+    deadlineAt: number,
   ): Promise<void> {
-    for (const table of tables) {
+    for (let i = 0; i < tables.length; i++) {
+      const table = tables[i]!;
       const key = table.tableName.toLowerCase();
       const known = this.acknowledgedSeqTxns.get(key) ?? 0n;
       const ack = response.tables.find(
@@ -679,7 +896,16 @@ class Sender {
         this.acknowledgedSeqTxns.set(key, ack.seqTxn);
         continue;
       }
-      await this.resendStaleTable(key, table);
+      try {
+        await this.resendStaleTable(key, table, deadlineAt);
+      } catch (error) {
+        // Keep the current and all not-yet-verified tables for the next flush.
+        for (let j = i; j < tables.length; j++) {
+          const pending = tables[j]!;
+          this.staleRetryQueue.set(pending.tableName.toLowerCase(), pending);
+        }
+        throw error;
+      }
     }
   }
 
@@ -692,15 +918,34 @@ class Sender {
   private async resendStaleTable(
     key: string,
     table: QwpTableBuffer,
+    deadlineAt: number,
   ): Promise<void> {
     const known = this.acknowledgedSeqTxns.get(key) ?? 0n;
     for (let attempt = 1; attempt <= this.staleRetries; attempt++) {
+      if (this.remainingBudget(deadlineAt) <= 0) {
+        this.staleRetryQueue.set(key, table);
+        throw new QwpError(
+          `Table '${table.tableName}' could not be retried before the write deadline; the data has been retained and will be retried on the next flush.`,
+          {
+            code: "WRITE_DEADLINE",
+            delivery: "unknown",
+            retryable: true,
+            table: table.tableName,
+          },
+        );
+      }
       this.log(
         "warn",
         `Table '${table.tableName}' was not acknowledged with an advancing seqTxn, retrying (${attempt}/${this.staleRetries})`,
       );
       const frame = this.encoder.encode([table]);
-      const response = await this.transport.send(frame);
+      let response: QwpResponse;
+      try {
+        response = await this.sendFrame(frame, deadlineAt);
+      } catch (error) {
+        this.staleRetryQueue.set(key, table);
+        throw error;
+      }
       const ack = response.tables.find(
         (t) => t.name.toLowerCase() === key,
       );
@@ -710,10 +955,37 @@ class Sender {
       }
     }
     this.staleRetryQueue.set(key, table);
-    throw new Error(
+    throw new QwpError(
       `Table '${table.tableName}' was not acknowledged with an advancing seqTxn after ${this.staleRetries} retries; the table may have just been DROPped and recreated. The data has been retained and will be retried on the next flush.`,
+      {
+        code: "STALE_TABLE",
+        delivery: "unknown",
+        retryable: true,
+        table: table.tableName,
+      },
     );
   }
+}
+
+function deadlineFrom(deadlineMs: number | undefined): number {
+  return deadlineMs !== undefined && deadlineMs > 0
+    ? Date.now() + deadlineMs
+    : Number.POSITIVE_INFINITY;
+}
+
+function deadlineError(wasSent: boolean): QwpError {
+  return new QwpError("Write deadline exceeded before sending the frame", {
+    code: "WRITE_DEADLINE",
+    delivery: wasSent ? "unknown" : "not_sent",
+    retryable: true,
+  });
+}
+
+function shouldRetain(error: unknown): boolean {
+  if (!(error instanceof QwpError)) {
+    return true;
+  }
+  return error.delivery !== "rejected" || error.retryable;
 }
 
 /**

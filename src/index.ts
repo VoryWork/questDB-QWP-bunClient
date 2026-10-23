@@ -12,6 +12,8 @@ export type { ExtraOptions } from "./options";
 export type { TimestampUnit } from "./utils";
 export { bigintToTwosComplementBytes } from "./utils";
 export type { Logger } from "./logging";
+export { QwpError, isQwpError } from "./qwp/errors";
+export type { QwpErrorCode, QwpDelivery, QwpErrorOptions } from "./qwp/errors";
 export { QwpTransport } from "./qwp/transport";
 export { QwpEncoder } from "./qwp/encoder";
 export { GlobalSymbolDictionary } from "./qwp/symboldict";

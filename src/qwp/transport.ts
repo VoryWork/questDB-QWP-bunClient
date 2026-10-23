@@ -5,8 +5,10 @@ import {
   CLIENT_ID,
   HEADER_SIZE,
   STATUS_DICTIONARY_GAP,
+  STATUS_DURABLE_ACK,
   STATUS_INTERNAL_ERROR,
   STATUS_NOT_WRITABLE,
+  STATUS_OK,
   STATUS_PARSE_ERROR,
   STATUS_SCHEMA_MISMATCH,
   STATUS_SECURITY_ERROR,
@@ -15,6 +17,7 @@ import {
 } from "./constants";
 import { decodeResponse } from "./decoder";
 import type { QwpResponse } from "./decoder";
+import { QwpError, serverStatusError } from "./errors";
 
 const DEFAULT_QWP_AUTO_FLUSH_ROWS = 1000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
@@ -65,9 +68,11 @@ export class QwpTransport {
     this.connectTimeoutMs = isInteger(options.request_timeout, 1)
       ? options.request_timeout
       : DEFAULT_CONNECT_TIMEOUT_MS;
-    this.ackTimeoutMs = isInteger(options.request_timeout, 1)
-      ? options.request_timeout
-      : DEFAULT_ACK_TIMEOUT_MS;
+    this.ackTimeoutMs = isInteger(options.ack_timeout, 1)
+      ? options.ack_timeout
+      : isInteger(options.request_timeout, 1)
+        ? options.request_timeout
+        : DEFAULT_ACK_TIMEOUT_MS;
 
     if (options.token) {
       this.authorizationHeader = `Bearer ${options.token}`;
@@ -106,7 +111,16 @@ export class QwpTransport {
 
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error(`Failed to connect to ${this.url} [error=timeout]`));
+        reject(
+          new QwpError(
+            `Failed to connect to ${this.url} [error=timeout]`,
+            {
+              code: "CONNECT_FAILED",
+              delivery: "not_sent",
+              retryable: true,
+            },
+          ),
+        );
         try {
           ws.close();
         } catch {
@@ -121,26 +135,51 @@ export class QwpTransport {
       ws.onerror = () => {
         clearTimeout(timer);
         reject(
-          new Error(
+          new QwpError(
             `Failed to connect to ${this.url} [error=websocket handshake failed]`,
+            {
+              code: "CONNECT_FAILED",
+              delivery: "not_sent",
+              retryable: true,
+            },
           ),
         );
       };
       ws.onclose = () => {
         clearTimeout(timer);
-        reject(new Error(`Failed to connect to ${this.url} [error=connection closed]`));
+        reject(
+          new QwpError(
+            `Failed to connect to ${this.url} [error=connection closed]`,
+            {
+              code: "CONNECT_FAILED",
+              delivery: "not_sent",
+              retryable: true,
+            },
+          ),
+        );
       };
     });
 
     this.ws = ws;
     ws.onopen = null;
     ws.onerror = () => {
-      this.failAllPending(new Error("WebSocket connection error"));
+      this.failAllPending(
+        new QwpError("WebSocket connection error", {
+          code: "CONNECTION_ERROR",
+          delivery: "unknown",
+          retryable: true,
+        }),
+      );
     };
     ws.onclose = (event) => {
       this.failAllPending(
-        new Error(
+        new QwpError(
           `WebSocket connection closed [code=${event.code}, reason=${event.reason}]`,
+          {
+            code: "CONNECTION_CLOSED",
+            delivery: "unknown",
+            retryable: true,
+          },
         ),
       );
     };
@@ -154,26 +193,43 @@ export class QwpTransport {
   /**
    * Sends an encoded QWP message and waits for the server's acknowledgement.
    * Establishes the connection first if it is not yet open.
+   *
+   * @param timeoutMs optional acknowledgement wait override, used to respect
+   *        an overall write deadline
    */
-  async send(frame: Uint8Array): Promise<QwpResponse> {
+  async send(frame: Uint8Array, timeoutMs?: number): Promise<QwpResponse> {
     if (!this.isConnected()) {
       await this.connect();
     }
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new Error("QWP transport is not connected");
+      throw new QwpError("QWP transport is not connected", {
+        code: "CONNECT_FAILED",
+        delivery: "not_sent",
+        retryable: true,
+      });
     }
 
+    const ackTimeout =
+      timeoutMs === undefined
+        ? this.ackTimeoutMs
+        : Math.max(1, Math.min(this.ackTimeoutMs, timeoutMs));
     const seq = this.nextSeq++;
     const response = new Promise<QwpResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(seq);
         reject(
-          new Error(
+          new QwpError(
             `Timeout waiting for server acknowledgement [sequence=${seq}]`,
+            {
+              code: "ACK_TIMEOUT",
+              delivery: "unknown",
+              retryable: true,
+              sequence: BigInt(seq),
+            },
           ),
         );
-      }, this.ackTimeoutMs);
+      }, ackTimeout);
       this.pending.set(seq, { resolve, reject, timer });
     });
     // Avoid unhandled rejections when the connection closes while a flush is
@@ -230,7 +286,24 @@ export class QwpTransport {
     try {
       response = decodeResponse(bytes);
     } catch (error) {
-      this.failAllPending(error as Error);
+      this.failAllPending(
+        new QwpError(
+          `Malformed server response: ${(error as Error)?.message ?? error}`,
+          {
+            code: "MALFORMED_RESPONSE",
+            delivery: "unknown",
+            retryable: false,
+            cause: error,
+          },
+        ),
+      );
+      return;
+    }
+
+    if (response.status === STATUS_DURABLE_ACK) {
+      // Durable acks carry no sequence echo; the sender is single-flight, so
+      // the oldest pending request is the one this ack belongs to.
+      this.resolveOldestPending(response);
       return;
     }
 
@@ -239,24 +312,51 @@ export class QwpTransport {
       // dictionary catch-up frame would be required. Surface the error.
       this.failPending(
         response.sequence,
-        new Error(
+        new QwpError(
           `Server reported a symbol dictionary gap [message=${response.message}]`,
+          {
+            code: "DICTIONARY_GAP",
+            delivery: "rejected",
+            retryable: true,
+            status: response.status,
+            sequence: response.sequence,
+          },
         ),
       );
       return;
     }
 
-    if (response.status !== 0) {
+    if (response.status !== STATUS_OK) {
       this.failPending(
         response.sequence,
-        new Error(
-          `Server rejected the batch [status=${response.status}, message=${response.message}]`,
+        serverStatusError(
+          response.status,
+          response.message,
+          response.sequence,
         ),
       );
       return;
     }
 
     this.resolvePending(response.sequence, response);
+  }
+
+  private resolveOldestPending(response: QwpResponse): void {
+    let oldest: number | undefined;
+    for (const seq of this.pending.keys()) {
+      if (oldest === undefined || seq < oldest) {
+        oldest = seq;
+      }
+    }
+    if (oldest === undefined) {
+      return;
+    }
+    const request = this.pending.get(oldest);
+    if (request) {
+      this.pending.delete(oldest);
+      clearTimeout(request.timer);
+      request.resolve(response);
+    }
   }
 
   private resolvePending(sequence: bigint, response: QwpResponse): void {

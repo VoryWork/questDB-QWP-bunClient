@@ -21,11 +21,15 @@ implementation in this project is based on the `io.questdb.client.cutlass.qwp` p
   arrays, DECIMAL64/128/256
 - **Synchronous acknowledgement model**: `flush()` resolves after the server ACK; one flush =
   one server transaction
+- **Explicit delivery outcome**: ack timeouts and connection loss are reported as `QwpError`
+  with `delivery: 'unknown'`; the unacknowledged frame is retained, never silently dropped
+- **Optional idempotent replay**: `resend_on_unknown=on` replays the exact frame once on a fresh
+  connection (requires `DEDUP UPSERT KEYS(ts)` on every target table)
 - **Auto flush**: `auto_flush_rows` (default 1000) / `auto_flush_interval` (default 1000ms)
 - **Authentication**: Basic (`username` + `password`) or Bearer (`token`) sent during the
   WebSocket upgrade handshake
-- **No loss, no duplicates**: serialized flushes plus table-buffer swap during sends keep rows
-  intact and unique under high load
+- **Ordered, non-lossy buffering**: serialized flushes plus table-buffer swap during sends keep
+  rows intact and unique under high load
 
 ## Installation
 
@@ -264,6 +268,50 @@ async function run() {
 run().catch(console.error);
 ```
 
+## Write delivery and retries
+
+An ACK timeout does not mean the write failed: the server may have committed the frame and
+merely failed to answer in time. The client therefore distinguishes three outcomes on
+`QwpError`:
+
+| `delivery` | meaning | safe to retry? |
+|------------|---------|----------------|
+| `not_sent` | the frame never reached the server (for example a connect failure) | yes, always |
+| `rejected` | the server answered with an error status; inspect `status` / `retryable` | only when `retryable` |
+| `unknown` | the frame was sent but no ACK arrived; it may or may not be committed | only with table dedup |
+
+On `unknown`, the exact frame is retained. The next `flush()` (or `retryPending()`) sends it
+byte-for-byte before any newer rows. Nothing is dropped silently.
+
+```typescript
+import { Sender, QwpError } from "questdb-qwp-bunclient";
+
+const sender = await Sender.fromConfig(
+  // resend_on_unknown=on asserts that the target tables use
+  // DEDUP UPSERT KEYS(ts), so a replay is idempotent.
+  "ws::addr=127.0.0.1:9000;auto_flush=off;ack_timeout=15000;resend_on_unknown=on",
+);
+
+try {
+  // optional total budget for this flush, including a replay attempt
+  await sender.flush(20_000);
+} catch (error) {
+  if (error instanceof QwpError && error.delivery === "unknown") {
+    // retained; retry later or discard explicitly
+    // await sender.retryPending();
+    // await sender.discardPending();
+  }
+}
+```
+
+Replay is opt-in because the client cannot verify the table schema. Without
+`DEDUP UPSERT KEYS(ts)`, replaying an `unknown` frame can duplicate rows. Deterministic
+rejections (`SCHEMA_MISMATCH`, `PARSE_ERROR`, `SECURITY_ERROR`, ...) are never replayed. A
+`NOT_WRITABLE` or `DICTIONARY_GAP` rejection is safe to replay and is retried once even when
+`resend_on_unknown` is off.
+
+
+
 ## Configuration options
 
 Format: `protocol::key=value;key=value;` (parsing rules match the nodejs client: keys are
@@ -280,6 +328,10 @@ must be integers).
 | `auto_flush_rows` | flush when this many rows accumulate, 0 disables | 1000 |
 | `auto_flush_interval` | flush interval in milliseconds, 0 disables | 1000 |
 | `request_timeout` | connection and ACK wait timeout (ms) | 10000 |
+| `ack_timeout` | overrides `request_timeout` for ACK waits only | `request_timeout` |
+| `resend_on_unknown` | `on` / `off`; replay an unacknowledged frame once on a fresh connection (requires table dedup) | `off` |
+| `replay_backoff_ms` | delay between reconnecting and replaying (ms) | 100 |
+| `stale_retries` | retries for a table whose ACK does not advance its `seqTxn` | 3 |
 | `init_buf_size` / `max_buf_size` | buffer sizes (compatibility options) | 64KiB / 100MiB |
 | `max_name_len` | maximum table/column name length | 127 |
 | `tls_verify` / `tls_ca` | accepted for config compatibility; custom CA is not yet supported by Bun WebSocket | - |
@@ -301,6 +353,7 @@ src/
     ├── tablebuffer.ts# columnar table buffer (row commit/null padding)
     ├── encoder.ts    # QWP message encoding
     ├── decoder.ts    # server response decoding (OK/error)
+    ├── errors.ts     # QwpError: code / delivery / retryable / status
     └── transport.ts  # Bun WebSocket transport (handshake/send/ACK matching)
 ```
 
@@ -324,6 +377,7 @@ src/
 | `sender.config.test.ts` | Sender construction validation (21 cases) | none |
 | `sender.buffer.test.ts` | QWP encoding byte assertions + row-building validation (28 cases) | none |
 | `sender.transport.test.ts` | handshake/auth/ACK/error handling (12 cases, mock WS server) | none |
+| `sender.delivery.test.ts` | delivery outcome, retention, replay and deadlines (13 cases, mock WS server) | none |
 | `logging.test.ts` | default logging (5 cases) | none |
 | `utils.decimal.test.ts` | two's-complement encoding (4 cases) | none |
 | `sender.integration.test.ts` | end-to-end against a local QuestDB (9 cases) | QuestDB |

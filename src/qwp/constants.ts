@@ -6,7 +6,7 @@
  */
 
 /** Client identifier sent in the X-QWP-Client-Id upgrade header. */
-export const CLIENT_ID = "bunjs/1.0.0";
+export const CLIENT_ID = "bunjs/1.1.0";
 
 /** Flag bit: defer WAL commit. */
 export const FLAG_DEFER_COMMIT = 0x01;

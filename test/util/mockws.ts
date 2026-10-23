@@ -2,6 +2,7 @@
 import type { Server } from "bun";
 import {
   FLAG_DELTA_SYMBOL_DICT,
+  STATUS_DURABLE_ACK,
   TYPE_BINARY,
   TYPE_BOOLEAN,
   TYPE_BYTE,
@@ -44,6 +45,12 @@ export type TableAckAction =
 /** Per-frame ack script, keyed by lower-cased table name. */
 export type AckScript = Record<string, TableAckAction>;
 
+/** Per-frame transport script: acknowledge, ignore, or drop the connection. */
+export type FrameAction = "ack" | "silent" | "close";
+
+/** Per-frame server rejection; a null entry means "ack normally". */
+export type FrameError = { status: number; message: string } | null;
+
 /**
  * A mock QWP WebSocket server built on Bun.serve.
  *
@@ -60,6 +67,17 @@ export class MockQwpServer {
   errorStatus: { status: number; message: string } | null = null;
   /** When true, received frames are not answered at all. */
   silent = false;
+  /** Scripted per-frame transport behavior; index = received frame index. */
+  frameActions: FrameAction[] = [];
+  /**
+   * Scripted per-frame rejection; index = received frame index. An explicit
+   * null entry acknowledges the frame; once exhausted, `errorStatus` applies.
+   */
+  frameErrors: FrameError[] = [];
+  /** When true, OK responses use the durable-ack layout (no sequence echo). */
+  durableAck = false;
+  /** Number of WebSocket connections accepted so far. */
+  connectionCount = 0;
   /**
    * Scripted per-frame acknowledgement behavior. Entry i applies to the
    * i-th received frame; tables not mentioned advance normally. Once the
@@ -68,31 +86,55 @@ export class MockQwpServer {
   script: AckScript[] = [];
   /** Per-table transaction counters, starting at 1 on the first advance. */
   private tableSeqTxn = new Map<string, number>();
+  /** Per-connection message counters, mirroring the server's sequence echo. */
+  private connectionSeq = new Map<object, number>();
   onFrame?: (frame: Uint8Array) => void;
 
   async start(port = 0): Promise<number> {
     this.server = Bun.serve({
       port,
       websocket: {
-        open: () => {},
+        open: (ws) => {
+          this.connectionSeq.set(ws as unknown as object, 0);
+        },
         message: (ws, data) => {
           const bytes =
             data instanceof Uint8Array
               ? data
               : new Uint8Array(data as unknown as ArrayBuffer);
           this.frames.push(bytes);
+          const seq = this.connectionSeq.get(ws as unknown as object) ?? 0;
+          this.connectionSeq.set(ws as unknown as object, seq + 1);
           if (this.onFrame) {
             this.onFrame(bytes);
+          }
+          const frameIndex = this.frames.length - 1;
+          const action = this.frameActions[frameIndex];
+          if (action === "silent") {
+            return;
+          }
+          if (action === "close") {
+            ws.close(1000, "scripted close");
+            return;
           }
           if (this.silent) {
             return;
           }
-          if (this.errorStatus) {
-            ws.send(encodeErrorFrame(this.errorStatus.status, this.errorStatus.message));
+          const scriptedError =
+            frameIndex < this.frameErrors.length
+              ? this.frameErrors[frameIndex]
+              : this.errorStatus;
+          if (scriptedError) {
+            ws.send(
+              encodeErrorFrame(
+                scriptedError.status,
+                scriptedError.message,
+                BigInt(seq),
+              ),
+            );
             return;
           }
           if (this.autoAck) {
-            const frameIndex = this.frames.length - 1;
             const scripted = this.script[frameIndex];
             const ackTables = parseFrameTableNames(bytes)
               .map((name) => {
@@ -114,12 +156,19 @@ export class MockQwpServer {
               .filter(
                 (t): t is { name: string; seqTxn: bigint } => t !== null,
               );
-            ws.send(encodeOkFrame(BigInt(frameIndex), ackTables));
+            ws.send(
+              this.durableAck
+                ? encodeDurableAckFrame(ackTables)
+                : encodeOkFrame(BigInt(seq), ackTables),
+            );
           }
         },
-        close: () => {},
+        close: (ws) => {
+          this.connectionSeq.delete(ws as unknown as object);
+        },
       },
       fetch: (req, server2) => {
+        this.connectionCount += 1;
         this.upgradeHeaders = req.headers;
         if (server2.upgrade(req)) {
           return undefined;
@@ -140,6 +189,7 @@ export class MockQwpServer {
     this.frames = [];
     this.upgradeHeaders = null;
     this.tableSeqTxn.clear();
+    this.connectionSeq.clear();
   }
 }
 
@@ -173,15 +223,46 @@ export function encodeOkFrame(
 }
 
 /**
+ * Builds a QWP durable-ack response frame (Enterprise):
+ * [status:1][tableCount:u16][(nameLen:u16 + name + seqTxn:u64)...]
+ */
+export function encodeDurableAckFrame(
+  tables: { name: string; seqTxn: bigint }[] = [],
+): Uint8Array {
+  const encoder = new TextEncoder();
+  let size = 3;
+  for (const table of tables) {
+    size += 2 + encoder.encode(table.name).length + 8;
+  }
+  const bytes = new Uint8Array(size);
+  const view = new DataView(bytes.buffer);
+  view.setUint8(0, STATUS_DURABLE_ACK);
+  view.setUint16(1, tables.length, true);
+  let offset = 3;
+  for (const table of tables) {
+    const name = encoder.encode(table.name);
+    view.setUint16(offset, name.length, true);
+    bytes.set(name, offset + 2);
+    view.setBigUint64(offset + 2 + name.length, table.seqTxn, true);
+    offset += 2 + name.length + 8;
+  }
+  return bytes;
+}
+
+/**
  * Builds a QWP error response frame.
  * [status:1][sequence:u64][msgLen:u16][msg]
  */
-export function encodeErrorFrame(status: number, message: string): Uint8Array {
+export function encodeErrorFrame(
+  status: number,
+  message: string,
+  sequence = 0n,
+): Uint8Array {
   const msg = new TextEncoder().encode(message);
   const bytes = new Uint8Array(11 + msg.length);
   const view = new DataView(bytes.buffer);
   view.setUint8(0, status);
-  view.setBigUint64(1, 0n, true);
+  view.setBigUint64(1, sequence, true);
   view.setUint16(9, msg.length, true);
   bytes.set(msg, 11);
   return bytes;

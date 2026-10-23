@@ -108,9 +108,19 @@ type DeprecatedOptions = {
  * <li> request_timeout: <i>integer</i> - The time in milliseconds to wait for the WebSocket connection and for
  * each server acknowledgement, set to 10 seconds by default.
  * </li>
+ * <li> ack_timeout: <i>integer</i> - Overrides <i>request_timeout</i> for acknowledgement waits only.
+ * </li>
+ * <li> resend_on_unknown: <i>enum, accepted values: on, off</i> - Re-send a frame once on a fresh
+ * connection when its acknowledgement timed out (delivery unknown). Only enable this when every
+ * target table uses DEDUP UPSERT KEYS, otherwise a re-send can duplicate rows. Defaults to off.
+ * </li>
+ * <li> replay_backoff_ms: <i>integer</i> - Delay in milliseconds between reconnecting and replaying
+ * an unacknowledged frame, defaults to 100.
+ * </li>
  * <li> request_min_throughput: <i>integer</i> - Accepted for configuration compatibility; not used by the WebSocket transport.
  * </li>
- * <li> retry_timeout: <i>integer</i> - Accepted for configuration compatibility; the WebSocket transport does not retry.
+ * <li> retry_timeout: <i>integer</i> - Accepted for configuration compatibility; use
+ * <i>resend_on_unknown</i> / <i>replay_backoff_ms</i> to control QWP replay.
  * </li>
  * <li> stale_retries: <i>integer</i> - Number of times a single table whose server
  * acknowledgement does not advance its seqTxn is re-sent before its data is
@@ -145,8 +155,11 @@ class SenderOptions {
 
   request_min_throughput?: number;
   request_timeout?: number;
+  ack_timeout?: number;
   retry_timeout?: number;
   stale_retries?: number;
+  resend_on_unknown?: boolean;
+  replay_backoff_ms?: number;
 
   init_buf_size?: number | null;
   max_buf_size?: number | null;
@@ -333,8 +346,11 @@ const ValidConfigKeys = [
   "auto_flush_interval",
   "request_min_throughput",
   "request_timeout",
+  "ack_timeout",
   "retry_timeout",
   "stale_retries",
+  "resend_on_unknown",
+  "replay_backoff_ms",
   "init_buf_size",
   "max_buf_size",
   "max_name_len",
@@ -464,8 +480,11 @@ function parseTlsOptions(options: SenderOptions) {
 function parseRequestTimeoutOptions(options: SenderOptions) {
   parseInteger(options, "request_min_throughput", "request min throughput", 1);
   parseInteger(options, "request_timeout", "request timeout", 1);
+  parseInteger(options, "ack_timeout", "ack timeout", 1);
   parseInteger(options, "retry_timeout", "retry timeout", 0);
   parseInteger(options, "stale_retries", "stale table retries", 1);
+  parseBoolean(options, "resend_on_unknown", "resend on unknown");
+  parseInteger(options, "replay_backoff_ms", "replay backoff", 0);
 }
 
 function parseMaxNameLength(options: SenderOptions) {

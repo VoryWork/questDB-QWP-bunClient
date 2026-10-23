@@ -18,9 +18,11 @@ QWP 是 QuestDB 的二进制数据摄入协议（WebSocket 传输，`/write/v4` 
 - **列式二进制编码**：12 字节消息头（`QWP1`）、增量符号字典、null 位图、VARCHAR 偏移数组、
   位打包 BOOLEAN、TIMESTAMP（微秒/纳秒）、DOUBLE/LONG 数组、DECIMAL64/128/256
 - **同步确认模型**：`flush()` 在服务器确认（ACK）后返回，单次 flush = 服务器单事务
+- **写入结果显式化**：ACK 超时/连接断会抛 `QwpError`（`delivery: 'unknown'`），未确认的帧会保留，不再静默丢失
+- **可选幂等重发**：`resend_on_unknown=on` 时换新建连、按原帧重放一次（要求所有目标表使用 `DEDUP UPSERT KEYS(ts)`）
 - **自动 flush**：`auto_flush_rows`（默认 1000）/ `auto_flush_interval`（默认 1000ms）
 - **认证**：Basic（`username`+`password`）或 Bearer（`token`）在 WebSocket 升级握手时发送
-- **防丢/防重**：flush 串行化 + 发送期间表缓冲替换，高负载下不丢行、不重复
+- **有序缓冲**：flush 串行化 + 发送期间表缓冲替换，高负载下不丢行、不重复
 
 ## 安装
 
@@ -257,6 +259,45 @@ async function run() {
 run().catch(console.error);
 ```
 
+## 写入结果与重发
+
+ACK 超时不等于写入失败：服务器可能已经提交了该帧，只是回执没有按时到达。客户端因此把
+`QwpError` 的结果分成三类：
+
+| `delivery` | 含义 | 能否重试 |
+|------------|------|----------|
+| `not_sent` | 帧没有到达服务器（例如建连失败） | 总是可以 |
+| `rejected` | 服务器返回错误状态，看 `status` / `retryable` | 仅 `retryable=true` |
+| `unknown` | 帧已发出但没收到 ACK，可能已提交也可能没有 | 仅在表使用 DEDUP 时 |
+
+`unknown` 时客户端会保留原帧。下一次 `flush()`（或 `retryPending()`）会先按原字节重放它，
+再发送新行，不会静默丢数据。
+
+```typescript
+import { Sender, QwpError } from "questdb-qwp-bunclient";
+
+const sender = await Sender.fromConfig(
+  // resend_on_unknown=on 表示目标表使用 DEDUP UPSERT KEYS(ts)，重放是幂等的
+  "ws::addr=127.0.0.1:9000;auto_flush=off;ack_timeout=15000;resend_on_unknown=on",
+);
+
+try {
+  // 可选总预算，重连重放也计入
+  await sender.flush(20_000);
+} catch (error) {
+  if (error instanceof QwpError && error.delivery === "unknown") {
+    // 数据已保留；稍后重试或显式丢弃
+    // await sender.retryPending();
+    // await sender.discardPending();
+  }
+}
+```
+
+重发默认关闭，因为客户端无法校验表结构；没有 `DEDUP UPSERT KEYS(ts)` 时重放可能重复写入。
+确定性错误（`SCHEMA_MISMATCH`、`PARSE_ERROR`、`SECURITY_ERROR` 等）不会重发；
+`NOT_WRITABLE`、`DICTIONARY_GAP` 属于安全可重试的拒绝，即使未开启 `resend_on_unknown`
+也会重放一次。
+
 ## 配置选项
 
 格式：`protocol::key=value;key=value;`（解析规则与 nodejs 客户端一致：key 大小写敏感、
@@ -272,6 +313,10 @@ run().catch(console.error);
 | `auto_flush_rows` | 行数触发 flush，0 禁用 | 1000 |
 | `auto_flush_interval` | 毫秒触发 flush，0 禁用 | 1000 |
 | `request_timeout` | 连接与 ACK 等待超时（ms） | 10000 |
+| `ack_timeout` | 仅覆盖 ACK 等待超时（ms） | 同 `request_timeout` |
+| `resend_on_unknown` | `on` / `off`；ACK 超时后换连接按原帧重放一次（要求表 DEDUP） | `off` |
+| `replay_backoff_ms` | 重连后到重放之间的等待（ms） | 100 |
+| `stale_retries` | 某表 ACK 的 `seqTxn` 未前进时的重试次数 | 3 |
 | `init_buf_size` / `max_buf_size` | 缓冲尺寸（兼容选项） | 64KiB / 100MiB |
 | `max_name_len` | 表名/列名最大长度 | 127 |
 | `tls_verify` / `tls_ca` | 解析兼容；Bun WebSocket 暂不支持自定义 CA | - |
@@ -293,6 +338,7 @@ src/
     ├── tablebuffer.ts# 列式表缓冲（行提交/null 填充）
     ├── encoder.ts    # QWP 消息编码
     ├── decoder.ts    # 服务器响应解码（OK/error）
+    ├── errors.ts     # QwpError：code / delivery / retryable / status
     └── transport.ts  # Bun WebSocket 传输（握手/发送/ACK 匹配）
 ```
 
@@ -315,6 +361,7 @@ src/
 | `sender.config.test.ts` | Sender 构造校验（21 例） | 无 |
 | `sender.buffer.test.ts` | QWP 编码字节断言 + 行构建校验（28 例） | 无 |
 | `sender.transport.test.ts` | 握手/认证/ACK/错误处理（12 例，mock WS 服务器） | 无 |
+| `sender.delivery.test.ts` | 写入结果、数据保留、重放与 deadline（13 例，mock WS 服务器） | 无 |
 | `logging.test.ts` | 默认日志（5 例） | 无 |
 | `utils.decimal.test.ts` | 补码编码（4 例） | 无 |
 | `sender.integration.test.ts` | 本机 QuestDB 端到端（9 例） | QuestDB |
